@@ -1,0 +1,28 @@
+# Go
+/server/bin/
+*.test
+*.out
+/data/            # bbolt local state
+
+# Node / Nest client
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.*
+
+# Python client
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
