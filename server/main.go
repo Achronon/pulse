@@ -43,15 +43,21 @@ func run() error {
 	defer st.Close()
 
 	auth := api.NewAuthenticator(os.Getenv("PULSE_TOKEN"), parseTokens(os.Getenv("PULSE_TOKENS")))
+	allowUnauth := os.Getenv("PULSE_ALLOW_UNAUTHENTICATED") == "true"
 	if !auth.Enabled() {
-		slog.Warn("no PULSE_TOKEN/PULSE_TOKENS set — check-in endpoint is UNAUTHENTICATED")
+		// Fail closed: a missing/malformed token Secret must NOT silently expose
+		// the public check-in endpoint. Local dev opts in explicitly.
+		if !allowUnauth {
+			return errors.New("no PULSE_TOKEN/PULSE_TOKENS configured; refusing to start unauthenticated (set PULSE_ALLOW_UNAUTHENTICATED=true for local dev)")
+		}
+		slog.Warn("PULSE_ALLOW_UNAUTHENTICATED=true — check-in endpoint is UNAUTHENTICATED (dev only)")
 	}
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(metrics.NewCollector(st))
 
 	mux := http.NewServeMux()
-	api.New(st, auth).RegisterRoutes(mux)
+	api.New(st, auth, allowUnauth).RegisterRoutes(mux)
 	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
 
 	srv := &http.Server{
@@ -65,15 +71,22 @@ func run() error {
 
 	go expiryLoop(ctx, st, ttl)
 
+	serveErr := make(chan error, 1)
 	go func() {
 		slog.Info("pulse listening", "addr", addr, "db", dbPath, "ttl", ttl.String())
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("server error", "err", err)
-			stop()
+			serveErr <- err
 		}
 	}()
 
-	<-ctx.Done()
+	// Return a real error if the listener fails (e.g. port in use) so supervisors
+	// and CI see a non-zero exit instead of a misleading clean shutdown.
+	select {
+	case err := <-serveErr:
+		return err
+	case <-ctx.Done():
+	}
+
 	slog.Info("shutting down")
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

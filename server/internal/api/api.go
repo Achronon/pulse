@@ -54,12 +54,17 @@ func (a *Authenticator) lookup(tok string) (project string, ok bool) {
 
 // Server wires the store + authenticator into HTTP handlers.
 type Server struct {
-	store *store.Store
-	auth  *Authenticator
+	store       *store.Store
+	auth        *Authenticator
+	allowUnauth bool
 }
 
-// New returns a Server.
-func New(s *store.Store, a *Authenticator) *Server { return &Server{store: s, auth: a} }
+// New returns a Server. allowUnauth must be set explicitly (dev only) to permit
+// unauthenticated check-ins when no token is configured; otherwise the endpoint
+// fails closed.
+func New(s *store.Store, a *Authenticator, allowUnauth bool) *Server {
+	return &Server{store: s, auth: a, allowUnauth: allowUnauth}
+}
 
 // RegisterRoutes attaches the check-in and health handlers to mux.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
@@ -125,11 +130,11 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// authProject returns the project a request is authorized for. When auth is
-// disabled it returns a wildcard ("", true).
+// authProject returns the project a request is authorized for. When no token is
+// configured it fails closed unless allowUnauth was explicitly set (dev only).
 func (s *Server) authProject(r *http.Request) (project string, ok bool) {
 	if !s.auth.Enabled() {
-		return "", true
+		return "", s.allowUnauth
 	}
 	tok, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !found {

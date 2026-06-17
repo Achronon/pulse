@@ -140,6 +140,12 @@ func (s *Store) Apply(slug string, c CheckIn) (Monitor, error) {
 			setNext()
 		case StatusStart:
 			m.LastStart = now
+			// Advance next_expected to the FOLLOWING run as soon as a run starts.
+			// Otherwise a job that starts on time but runs longer than its grace
+			// window would trip the late rule (time() > next_expected + grace) even
+			// though it did start punctually — "running too long" is hung detection
+			// (max_runtime), not lateness. Clients send next_expected_at on start.
+			setNext()
 		case StatusOK:
 			m.LastSuccess = now
 			m.LastDuration = c.DurationSeconds

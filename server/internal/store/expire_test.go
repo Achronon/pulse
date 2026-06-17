@@ -33,6 +33,29 @@ func TestExpireSkipsLongIntervalNotYetDue(t *testing.T) {
 	}
 }
 
+// A start ping advances next_expected to the following run, so a job that starts
+// on time but runs long is not falsely flagged late (that's hung detection).
+func TestStartAdvancesNextExpected(t *testing.T) {
+	s := newTestStore(t)
+	fixed := time.Unix(1_700_000_000, 0)
+	s.now = func() time.Time { return fixed }
+
+	if _, err := s.Apply("job", CheckIn{Status: StatusRegister, IntervalSeconds: 300}); err != nil {
+		t.Fatal(err)
+	}
+	nextRun := fixed.Unix() + 300 // clients send the following run's time on start
+	m, err := s.Apply("job", CheckIn{Status: StatusStart, NextExpectedAt: nextRun})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.NextExpected != nextRun {
+		t.Errorf("start did not advance next_expected: got %d want %d", m.NextExpected, nextRun)
+	}
+	if m.LastStart != fixed.Unix() {
+		t.Errorf("last_start = %d, want %d", m.LastStart, fixed.Unix())
+	}
+}
+
 // Once a monitor is BOTH unseen and past-due beyond the TTL, it is reaped.
 func TestExpireReapsTrulyStale(t *testing.T) {
 	s := newTestStore(t)
