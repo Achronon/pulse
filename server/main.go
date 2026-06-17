@@ -123,11 +123,16 @@ func parseTokens(s string) map[string]string {
 			continue
 		}
 		proj, tok, ok := strings.Cut(pair, ":")
-		if !ok || strings.TrimSpace(tok) == "" {
-			slog.Warn("ignoring malformed PULSE_TOKENS entry (want project:token)")
+		proj, tok = strings.TrimSpace(proj), strings.TrimSpace(tok)
+		// Require a non-empty project: a per-project token with an empty project
+		// would be stored as a wildcard (handleCheckin treats project "" as
+		// any-project), letting a malformed entry write to every project. Wildcard
+		// access must come only from the explicit PULSE_TOKEN.
+		if !ok || tok == "" || proj == "" {
+			slog.Warn("ignoring malformed PULSE_TOKENS entry (want non-empty project:token)")
 			continue
 		}
-		out[strings.TrimSpace(tok)] = strings.TrimSpace(proj)
+		out[tok] = proj
 	}
 	return out
 }

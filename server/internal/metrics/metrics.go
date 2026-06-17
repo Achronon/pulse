@@ -64,11 +64,19 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(d, prometheus.GaugeValue, v, m.Slug, m.Project)
 		}
 		gauge(c.info, 1)
-		// Only emit timestamp gauges that have actually occurred; absent series
-		// are meaningful (e.g. a monitor that has never failed has no failure ts).
-		if m.LastSuccess > 0 {
-			gauge(c.lastSuccess, float64(m.LastSuccess))
-		}
+		// last_success and grace are ALWAYS emitted (even when 0) because the alert
+		// rules combine them with binary operators, and PromQL drops samples that
+		// lack a matching series on the other side:
+		//   - hung rule needs last_success as the RHS of last_start > last_success,
+		//     so a started-but-never-succeeded monitor (last_success=0) must still
+		//     emit a series or first-run hangs never alert.
+		//   - late rule adds next_expected + grace, so a 0-grace monitor must still
+		//     emit grace=0 or it can never become late.
+		gauge(c.lastSuccess, float64(m.LastSuccess))
+		gauge(c.grace, float64(m.GraceSeconds))
+		// The rest are emitted only when meaningful; their absence is correct (no
+		// last_failure ⇒ never failed; no max_runtime ⇒ opted out of hung detection;
+		// no next_expected ⇒ schedule unknown, cannot be late).
 		if m.LastStart > 0 {
 			gauge(c.lastStart, float64(m.LastStart))
 		}
@@ -77,9 +85,6 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		}
 		if m.NextExpected > 0 {
 			gauge(c.nextExpected, float64(m.NextExpected))
-		}
-		if m.GraceSeconds > 0 {
-			gauge(c.grace, float64(m.GraceSeconds))
 		}
 		if m.MaxRuntimeSeconds > 0 {
 			gauge(c.maxRuntime, float64(m.MaxRuntimeSeconds))

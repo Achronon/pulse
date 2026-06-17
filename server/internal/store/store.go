@@ -208,7 +208,13 @@ func (s *Store) ExpireOlderThan(ttl time.Duration) (int, error) {
 			if e := json.Unmarshal(v, &m); e != nil {
 				continue
 			}
-			if m.LastSeen < cutoff {
+			// Reap only a monitor that is BOTH unseen for the TTL window AND past
+			// its next expected run by that window (or has no known schedule). This
+			// keeps long-interval jobs alive until well after they were actually
+			// due — e.g. a monthly cron must not be deleted a day before its next
+			// run by a 30d sweep, which would erase its series so a real miss can
+			// never alert.
+			if m.LastSeen < cutoff && (m.NextExpected == 0 || m.NextExpected < cutoff) {
 				kk := make([]byte, len(k))
 				copy(kk, k)
 				keys = append(keys, kk)
