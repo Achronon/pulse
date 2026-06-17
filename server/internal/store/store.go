@@ -116,15 +116,6 @@ func (s *Store) Apply(slug string, c CheckIn) (Monitor, error) {
 		if c.Project != "" {
 			m.Project = c.Project
 		}
-		if c.GraceSeconds > 0 {
-			m.GraceSeconds = c.GraceSeconds
-		}
-		if c.MaxRuntimeSeconds > 0 {
-			m.MaxRuntimeSeconds = c.MaxRuntimeSeconds
-		}
-		if c.IntervalSeconds > 0 {
-			m.IntervalSeconds = c.IntervalSeconds
-		}
 		// next_expected: an explicit client-computed timestamp wins (full cron
 		// precision); otherwise fall back to now+interval (simple-period path).
 		setNext := func() {
@@ -135,10 +126,29 @@ func (s *Store) Apply(slug string, c CheckIn) (Monitor, error) {
 				m.NextExpected = now + c.IntervalSeconds
 			}
 		}
+		// register is the AUTHORITATIVE config event: it overwrites schedule
+		// metadata unconditionally (including to 0), so a job can disable hung
+		// detection or reset grace. start/ok/fail only update metadata when
+		// provided (> 0), so a bare ping never clobbers registration.
+		updateMetaIfSet := func() {
+			if c.GraceSeconds > 0 {
+				m.GraceSeconds = c.GraceSeconds
+			}
+			if c.MaxRuntimeSeconds > 0 {
+				m.MaxRuntimeSeconds = c.MaxRuntimeSeconds
+			}
+			if c.IntervalSeconds > 0 {
+				m.IntervalSeconds = c.IntervalSeconds
+			}
+		}
 		switch c.Status {
 		case StatusRegister:
+			m.GraceSeconds = c.GraceSeconds
+			m.MaxRuntimeSeconds = c.MaxRuntimeSeconds
+			m.IntervalSeconds = c.IntervalSeconds
 			setNext()
 		case StatusStart:
+			updateMetaIfSet()
 			m.LastStart = now
 			// Advance next_expected to the FOLLOWING run as soon as a run starts.
 			// Otherwise a job that starts on time but runs longer than its grace
@@ -147,14 +157,23 @@ func (s *Store) Apply(slug string, c CheckIn) (Monitor, error) {
 			// (max_runtime), not lateness. Clients send next_expected_at on start.
 			setNext()
 		case StatusOK:
+			updateMetaIfSet()
 			m.LastSuccess = now
 			m.LastDuration = c.DurationSeconds
 			m.RunsOK++
+			// Terminal: clear the in-progress marker so the hung rule
+			// (last_start > last_success) cannot re-fire for a completed run.
+			m.LastStart = 0
 			setNext()
 		case StatusFail:
+			updateMetaIfSet()
 			m.LastFailure = now
 			m.LastDuration = c.DurationSeconds
 			m.RunsFail++
+			// Terminal: a reported failure already pages via PulseMonitorFailed;
+			// clear LastStart so the same run does not ALSO become a hung alert
+			// after max_runtime elapses.
+			m.LastStart = 0
 			setNext()
 		}
 		raw, e := json.Marshal(m)
