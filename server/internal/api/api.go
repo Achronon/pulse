@@ -4,6 +4,7 @@ package api
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -115,7 +116,7 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 		project = tokenProject
 	}
 
-	if _, err := s.store.Apply(slug, store.CheckIn{
+	_, err := s.store.Apply(slug, store.CheckIn{
 		Status:            store.Status(req.Status),
 		Project:           project,
 		NextExpectedAt:    req.NextExpectedAt,
@@ -123,11 +124,18 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 		GraceSeconds:      req.GraceSeconds,
 		MaxRuntimeSeconds: req.MaxRuntimeSeconds,
 		DurationSeconds:   req.DurationSeconds,
-	}); err != nil {
+	})
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, store.ErrNegativeValue):
+		http.Error(w, "negative timing values not allowed", http.StatusBadRequest)
+	case errors.Is(err, store.ErrProjectMismatch):
+		// Slug is owned by another project — don't leak which; just forbid.
+		http.Error(w, "forbidden", http.StatusForbidden)
+	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
 	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // authProject returns the project a request is authorized for. When no token is

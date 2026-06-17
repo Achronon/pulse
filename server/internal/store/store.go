@@ -8,12 +8,21 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
+
+// ErrProjectMismatch is returned when a check-in tries to mutate a monitor that
+// already belongs to a different project — a scoped token must not be able to
+// hijack or move another project's monitor by guessing its slug.
+var ErrProjectMismatch = errors.New("monitor owned by a different project")
+
+// ErrNegativeValue is returned when a check-in carries a negative duration/timestamp.
+var ErrNegativeValue = errors.New("negative timing value")
 
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
@@ -102,6 +111,10 @@ func (s *Store) Apply(slug string, c CheckIn) (Monitor, error) {
 	if !ValidStatus(string(c.Status)) {
 		return Monitor{}, fmt.Errorf("invalid status %q", c.Status)
 	}
+	if c.GraceSeconds < 0 || c.MaxRuntimeSeconds < 0 || c.IntervalSeconds < 0 ||
+		c.NextExpectedAt < 0 || c.DurationSeconds < 0 {
+		return Monitor{}, ErrNegativeValue
+	}
 	var out Monitor
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucket)
@@ -110,6 +123,12 @@ func (s *Store) Apply(slug string, c CheckIn) (Monitor, error) {
 			if e := json.Unmarshal(raw, &m); e != nil {
 				return fmt.Errorf("unmarshal %s: %w", slug, e)
 			}
+		}
+		// Ownership guard: a check-in scoped to one project must not mutate a
+		// monitor that already belongs to another. (A wildcard/admin token sends
+		// an empty project and is exempt.)
+		if m.Project != "" && c.Project != "" && m.Project != c.Project {
+			return ErrProjectMismatch
 		}
 		now := s.now().Unix()
 		m.LastSeen = now
