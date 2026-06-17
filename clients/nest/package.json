@@ -1,0 +1,25 @@
+{
+  "name": "@achronon/pulse-nest",
+  "version": "0.1.0",
+  "description": "pulse heartbeat client + @Pulse decorator for NestJS / TypeScript",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/Achronon/pulse.git", "directory": "clients/nest" },
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "cron-parser": "^4.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}
