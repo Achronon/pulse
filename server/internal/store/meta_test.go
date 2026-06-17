@@ -21,6 +21,19 @@ func TestRegisterClearsStaleMetadata(t *testing.T) {
 		t.Errorf("re-register did not clear stale metadata: grace=%d max=%d", m.GraceSeconds, m.MaxRuntimeSeconds)
 	}
 
+	// Re-registering with NO schedule must clear next_expected (not leave a stale
+	// value that keeps driving the late rule).
+	if _, err := s.Apply("job", CheckIn{Status: StatusRegister, IntervalSeconds: 300}); err != nil {
+		t.Fatal(err)
+	}
+	if m, _, _ := s.Get("job"); m.NextExpected == 0 {
+		t.Fatal("precondition: interval register should set next_expected")
+	}
+	m, _ = s.Apply("job", CheckIn{Status: StatusRegister}) // no schedule at all
+	if m.NextExpected != 0 {
+		t.Errorf("re-register without schedule left stale next_expected=%d", m.NextExpected)
+	}
+
 	// But a bare start/ok must NOT clobber an existing registration's metadata.
 	if _, err := s.Apply("job", CheckIn{Status: StatusRegister, GraceSeconds: 60, MaxRuntimeSeconds: 90, IntervalSeconds: 300}); err != nil {
 		t.Fatal(err)

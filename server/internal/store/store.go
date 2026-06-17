@@ -165,7 +165,18 @@ func (s *Store) Apply(slug string, c CheckIn) (Monitor, error) {
 			m.GraceSeconds = c.GraceSeconds
 			m.MaxRuntimeSeconds = c.MaxRuntimeSeconds
 			m.IntervalSeconds = c.IntervalSeconds
-			setNext()
+			// Authoritative: set next_expected from the new schedule, or CLEAR it
+			// when the register supplies neither — re-registering without a
+			// schedule means "unknown/disabled", not "keep the old value". A stale
+			// NextExpected would otherwise keep driving the late rule.
+			switch {
+			case c.NextExpectedAt > 0:
+				m.NextExpected = c.NextExpectedAt
+			case c.IntervalSeconds > 0:
+				m.NextExpected = now + c.IntervalSeconds
+			default:
+				m.NextExpected = 0
+			}
 		case StatusStart:
 			updateMetaIfSet()
 			m.LastStart = now
