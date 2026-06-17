@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -103,6 +104,12 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	var req checkinRequest
 	if err := dec.Decode(&req); err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Reject trailing data (e.g. `{...} garbage` or two concatenated objects) so a
+	// malformed body cannot smuggle a mutation past the field validation above.
+	if dec.Decode(&struct{}{}) != io.EOF {
+		http.Error(w, "unexpected trailing data", http.StatusBadRequest)
 		return
 	}
 	if !store.ValidStatus(req.Status) {

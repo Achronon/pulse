@@ -69,6 +69,14 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Initial sweep BEFORE serving: a restart must not expose monitors that are
+	// already past TTL (they would false-alert as late until the first periodic
+	// sweep an hour later).
+	if n, err := st.ExpireOlderThan(ttl); err != nil {
+		slog.Error("initial expiry sweep", "err", err)
+	} else if n > 0 {
+		slog.Info("expired stale monitors at startup", "count", n)
+	}
 	go expiryLoop(ctx, st, ttl)
 
 	serveErr := make(chan error, 1)

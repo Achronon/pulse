@@ -97,6 +97,8 @@ func TestCheckinRejectsBadInput(t *testing.T) {
 		{"bad status", "job", `{"status":"bogus"}`},
 		{"bad json", "job", `{not json`},
 		{"unknown field", "job", `{"status":"ok","wat":1}`},
+		{"trailing data", "job", `{"status":"ok"} garbage`},
+		{"two objects", "job", `{"status":"ok"}{"status":"fail"}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
