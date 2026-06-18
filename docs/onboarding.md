@@ -40,8 +40,9 @@ Give the job `PULSE_URL=https://pulse.helhe.im`, `PULSE_TOKEN=<its project token
 ### NestJS / TypeScript — drop-in for `@SentryCron`
 
 ```ts
+// npm install @achrononlimited/pulse-nest
 import { Cron } from '@nestjs/schedule';
-import { Pulse } from '@achrononlimited/pulse-nest'; // until published: vendored copy
+import { Pulse } from '@achrononlimited/pulse-nest';
 
 @Cron('*/5 * * * *')
 @Pulse('empera-booking-expiry', { schedule: '*/5 * * * *', grace: '2m', maxRuntime: '4m' })
