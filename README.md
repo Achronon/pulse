@@ -11,6 +11,9 @@ check-in state and exposes it as metrics.
 > **Status: LIVE** at `pulse.helhe.im`. **[Onboard a job →
 > `docs/onboarding.md`](docs/onboarding.md)** · full design in
 > [`kb/plans/active/0001-pulse-heartbeat-monitoring-primitive.md`](kb/plans/active/0001-pulse-heartbeat-monitoring-primitive.md).
+>
+> Generated alerts (`PulseMonitorLate` / `PulseMonitorHung` / `PulseMonitorFailed`)
+> and a Grafana dashboard ship via the Helheim ops-control-plane.
 > Tracked under Linear team **Helheim (HLM)**, epic HLM-486.
 
 ## How it works (one screen)
