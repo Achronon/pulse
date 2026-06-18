@@ -1,0 +1,60 @@
+# Publish @achronon/pulse-nest to npm (HLM-497).
+#
+# Deliberate, tag-triggered publish. To release:
+#   1. bump clients/nest/package.json "version" (e.g. 0.1.0) on main
+#   2. tag the commit:  git tag pulse-nest-v0.1.0 && git push origin pulse-nest-v0.1.0
+#
+# Requires repo secret NPM_TOKEN — an npm automation token for the @achronon
+# org/scope with publish rights. Publishes with --provenance (supply-chain
+# attestation via GitHub OIDC; needs id-token: write).
+name: publish-nest
+
+on:
+  push:
+    tags:
+      - "pulse-nest-v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write # npm provenance (OIDC)
+
+jobs:
+  publish:
+    name: build + publish to npm
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/nest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install (clean, lockfile-pinned)
+        run: npm ci
+
+      - name: Guard — tag version matches package.json
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#pulse-nest-v}"
+          echo "package.json=$PKG_VERSION  tag=$TAG_VERSION"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      - name: Build (also runs via prepublishOnly)
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Publish
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
