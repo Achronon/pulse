@@ -18,7 +18,7 @@ Onboarding: `docs/onboarding.md`.
   (10 monitors reporting `ok`, 0 fail). **All 14 Sentry cron monitors deleted.**
 - **Open follow-ups:** HLM-489 (Grafana dashboard + full ops-control-plane generator
   onboarding + raise severity after soak), HLM-494 (docs — this), HLM-497 (publish
-  `@achronon/pulse-nest`, drop empera's vendored client). HLM-493 closed (superseded
+  `@achrononlimited/pulse-nest`, drop empera's vendored client). HLM-493 closed (superseded
   by live empera traffic).
 
 ## Decisions

@@ -1,5 +1,5 @@
 {
-  "name": "@achronon/pulse-nest",
+  "name": "@achrononlimited/pulse-nest",
   "version": "0.1.0",
   "description": "pulse heartbeat client + @Pulse decorator for NestJS / TypeScript",
   "license": "MIT",

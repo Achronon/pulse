@@ -1,4 +1,4 @@
-# @achronon/pulse-nest
+# @achrononlimited/pulse-nest
 
 pulse heartbeat client + `@Pulse` decorator for NestJS / TypeScript. Fail-open: a
 monitoring error never affects your job.
@@ -7,7 +7,7 @@ Drop-in for `@SentryCron` — keep your `@Cron(...)` and swap the decorator:
 
 ```ts
 import { Cron } from '@nestjs/schedule';
-import { Pulse } from '@achronon/pulse-nest';
+import { Pulse } from '@achrononlimited/pulse-nest';
 
 @Cron('*/5 * * * *')
 @Pulse('empera-booking-expiry', { schedule: '*/5 * * * *', grace: '2m', maxRuntime: '4m' })
@@ -19,7 +19,7 @@ async expireStaleBookings() {
 Configure once at bootstrap (or rely on env `PULSE_URL`, `PULSE_TOKEN`, `PULSE_PROJECT`):
 
 ```ts
-import { configurePulse } from '@achronon/pulse-nest';
+import { configurePulse } from '@achrononlimited/pulse-nest';
 
 configurePulse({
   baseUrl: process.env.PULSE_URL,
@@ -36,7 +36,7 @@ the server — the server does no cron parsing. Durations accept seconds (`240`)
 Announce a monitor at startup so a job that never fires is detectable:
 
 ```ts
-import { getPulseClient } from '@achronon/pulse-nest';
+import { getPulseClient } from '@achrononlimited/pulse-nest';
 await getPulseClient().register('empera-booking-expiry', { schedule: '*/5 * * * *', grace: '2m' });
 ```
 

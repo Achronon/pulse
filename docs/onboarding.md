@@ -41,7 +41,7 @@ Give the job `PULSE_URL=https://pulse.helhe.im`, `PULSE_TOKEN=<its project token
 
 ```ts
 import { Cron } from '@nestjs/schedule';
-import { Pulse } from '@achronon/pulse-nest'; // until published: vendored copy
+import { Pulse } from '@achrononlimited/pulse-nest'; // until published: vendored copy
 
 @Cron('*/5 * * * *')
 @Pulse('empera-booking-expiry', { schedule: '*/5 * * * *', grace: '2m', maxRuntime: '4m' })
