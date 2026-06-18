@@ -1,25 +1,25 @@
 # pulse — active
 
-_Last updated: 2026-06-17_
+_Last updated: 2026-06-18_
 
 ## What this is
 
-Heartbeat / cron-liveness monitoring primitive replacing 14 Sentry cron monitors
+Heartbeat / cron-liveness monitoring primitive that replaced 14 Sentry cron monitors
 (all `empera-*`). Dumb Go exporter + Nest/Go/Python clients; alerting via the Ops
-Control Plane. Full design: `kb/plans/active/0001-pulse-heartbeat-monitoring-primitive.md`.
+Control Plane. Design: `kb/plans/active/0001-pulse-heartbeat-monitoring-primitive.md`.
+Onboarding: `docs/onboarding.md`.
 
-## Status (2026-06-17)
+## Status (2026-06-18) — LIVE
 
-Building everything in one session — user opted "go all the way": build + live deploy +
-empera cutover + delete Sentry monitors **today**, **no soak** (risk accepted: a fresh
-server briefly monitors real payout/booking jobs before bake-in).
-
-- **HLM-487 server** — IN PROGRESS. `server/` Go exporter: store (bbolt) + metrics
-  collector + authed check-in API + graceful main + tests + Dockerfile. On branch
-  `feature/hlm-487-pulse-server`.
-- HLM-490/491/492 clients, HLM-488 deploy, HLM-489 alerting, HLM-493 dogfood,
-  HLM-494 docs — pending.
-- EMP empera cutover + Sentry monitor deletion — pending (downstream).
+- **Server** (HLM-487) LIVE at `pulse.helhe.im` — hardened over 6 codex rounds.
+- **Clients** (HLM-490/491/492) merged. **Deploy** (HLM-488, k8s-gitops #292) live.
+- **Alerts** (HLM-489) live as a service-local PrometheusRule (severity `warning`).
+- **empera cutover** DONE — released `v1.3.23`; 13 crons on `@Pulse`, **verified**
+  (10 monitors reporting `ok`, 0 fail). **All 14 Sentry cron monitors deleted.**
+- **Open follow-ups:** HLM-489 (Grafana dashboard + full ops-control-plane generator
+  onboarding + raise severity after soak), HLM-494 (docs — this), HLM-497 (publish
+  `@achronon/pulse-nest`, drop empera's vendored client). HLM-493 closed (superseded
+  by live empera traffic).
 
 ## Decisions
 

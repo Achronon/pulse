@@ -8,9 +8,10 @@ Alerting, dashboards, dedup, routing, and forensics are delegated to the existin
 Control Plane (**Prometheus + Alertmanager + Grafana + Loki**) — `pulse` only remembers
 check-in state and exposes it as metrics.
 
-> **Status: design / pre-implementation.** See
-> [`kb/plans/active/0001-pulse-heartbeat-monitoring-primitive.md`](kb/plans/active/0001-pulse-heartbeat-monitoring-primitive.md)
-> for the full design. Tracked under Linear team **Helheim (HLM)**.
+> **Status: LIVE** at `pulse.helhe.im`. **[Onboard a job →
+> `docs/onboarding.md`](docs/onboarding.md)** · full design in
+> [`kb/plans/active/0001-pulse-heartbeat-monitoring-primitive.md`](kb/plans/active/0001-pulse-heartbeat-monitoring-primitive.md).
+> Tracked under Linear team **Helheim (HLM)**, epic HLM-486.
 
 ## How it works (one screen)
 
