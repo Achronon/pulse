@@ -5,6 +5,10 @@ A job sends **check-ins**; pulse stores last-known state and exposes Prometheus
 metrics. Alertmanager fires if a job goes late / hangs / fails — pulse itself stays
 dumb. (Design: [`kb/plans/active/0001-pulse-heartbeat-monitoring-primitive.md`](../kb/plans/active/0001-pulse-heartbeat-monitoring-primitive.md).)
 
+Release and provenance rules live in [`docs/release.md`](release.md). This page is
+an onboarding protocol, not a claim that every client artifact is currently
+published or attested.
+
 - **Endpoint:** `https://pulse.helhe.im/v1/checkin/<slug>` (bearer-token auth — the
   only path exposed publicly).
 - `/metrics` and `/healthz` are in-cluster only.
@@ -67,6 +71,10 @@ import pulse  # env: PULSE_URL, PULSE_TOKEN, PULSE_PROJECT
 @pulse.pulse("ingest-nightly", schedule="0 3 * * *", grace="10m", max_runtime="1h")
 def run_ingest(): ...
 ```
+
+The Python distribution name is not claimed yet. Until an owner claims it, use a
+checked-out wheel from the release workflow rather than adding a `pip install
+pulse-client` instruction to production manifests.
 
 ### Shell / anything (curl)
 

@@ -1,12 +1,14 @@
-# Publish @achronon/pulse-nest to npm (HLM-497).
+# Publish @achrononlimited/pulse-nest to npm (HLM-497).
 #
 # Deliberate, tag-triggered publish. To release:
 #   1. bump clients/nest/package.json "version" (e.g. 0.1.0) on main
 #   2. tag the commit:  git tag pulse-nest-v0.1.0 && git push origin pulse-nest-v0.1.0
 #
-# Requires repo secret NPM_TOKEN — an npm automation token for the @achronon
+# Requires repo secret NPM_TOKEN — an npm token for the @achrononlimited
 # org/scope with publish rights. Publishes with --provenance (supply-chain
-# attestation via GitHub OIDC; needs id-token: write).
+# attestation via GitHub OIDC; needs id-token: write). The release gate below
+# refuses orphan tags, version reuse with different bytes, and an existing
+# package that claims provenance without a registry attestation.
 name: publish-nest
 
 on:
@@ -28,6 +30,8 @@ jobs:
         working-directory: clients/nest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -37,15 +41,53 @@ jobs:
       - name: Install (clean, lockfile-pinned)
         run: npm ci
 
-      - name: Guard — tag version matches package.json
+      - name: Guard — release identity, ancestry, bytes, and provenance
         if: startsWith(github.ref, 'refs/tags/')
+        env:
+          EXPECTED_PACKAGE: "@achrononlimited/pulse-nest"
         run: |
+          set -euo pipefail
+
+          PKG_NAME="$(node -p "require('./package.json').name")"
           PKG_VERSION="$(node -p "require('./package.json').version")"
           TAG_VERSION="${GITHUB_REF_NAME#pulse-nest-v}"
-          echo "package.json=$PKG_VERSION  tag=$TAG_VERSION"
+          echo "package=$PKG_NAME@$PKG_VERSION  tag=$GITHUB_REF_NAME"
+          if [ "$PKG_NAME" != "$EXPECTED_PACKAGE" ]; then
+            echo "::error::package name $PKG_NAME is not the release name $EXPECTED_PACKAGE"
+            exit 1
+          fi
           if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION"
             exit 1
+          fi
+
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags origin main --force
+          TAG_SHA="$(git -C "$GITHUB_WORKSPACE" rev-list -n 1 "$GITHUB_REF_NAME")"
+          MAIN_SHA="$(git -C "$GITHUB_WORKSPACE" rev-parse origin/main)"
+          if ! git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$TAG_SHA" "$MAIN_SHA"; then
+            echo "::error::release tag $GITHUB_REF_NAME is not an ancestor of origin/main"
+            exit 1
+          fi
+
+          PACK_JSON="$(npm pack --json)"
+          LOCAL_SHA="$(node -e 'const p=JSON.parse(process.argv[1]); console.log(p[0].shasum)' "$PACK_JSON")"
+          REMOTE_VERSION="$(npm view "$EXPECTED_PACKAGE@$PKG_VERSION" version 2>/dev/null || true)"
+          if [ -n "$REMOTE_VERSION" ]; then
+            REMOTE_SHA="$(npm view "$EXPECTED_PACKAGE@$PKG_VERSION" dist.shasum)"
+            if [ "$REMOTE_SHA" != "$LOCAL_SHA" ]; then
+              echo "::error::immutable version $EXPECTED_PACKAGE@$PKG_VERSION already exists with different bytes"
+              exit 1
+            fi
+
+            PROVENANCE="$(node -p "String(require('./package.json').publishConfig?.provenance ?? false)")"
+            PACKAGE_PATH="${EXPECTED_PACKAGE//\//%2F}"
+            ATTESTATION_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/-/npm/v1/attestations/${PACKAGE_PATH}@${PKG_VERSION}")"
+            if [ "$PROVENANCE" = "true" ] && [ "$ATTESTATION_STATUS" != "200" ]; then
+              echo "::error::package claims provenance but registry attestation lookup returned HTTP $ATTESTATION_STATUS"
+              exit 1
+            fi
+          else
+            echo "version is not yet published; immutable-byte and existing-attestation checks are deferred"
           fi
 
       - name: Build (also runs via prepublishOnly)
@@ -55,6 +97,7 @@ jobs:
         run: npm test
 
       - name: Publish
+        if: startsWith(github.ref, 'refs/tags/pulse-nest-v')
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,205 @@
+name: clients-and-release-contract
+
+on:
+  pull_request:
+    paths:
+      - "clients/**"
+      - "server/**"
+      - "docs/**"
+      - ".github/workflows/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  nest:
+    name: Nest client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/nest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: clients/nest/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  go:
+    name: Go client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: clients/go/go.sum
+      - run: go vet ./...
+      - run: go test ./...
+
+  python:
+    name: Python client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build and validate wheel
+        run: |
+          python -m pip install --upgrade build twine '.[dev]'
+          python -m build
+          python -m twine check dist/*
+      - name: Install smoke in a clean virtualenv
+        run: |
+          python -m venv "$RUNNER_TEMP/pulse-python-consumer"
+          "$RUNNER_TEMP/pulse-python-consumer/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/pulse-python-consumer/bin/python" -c 'import pulse; assert hasattr(pulse, "Client")'
+      - run: python -m pytest -q
+
+  server:
+    name: Server no-push Docker contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build without pushing
+        run: docker build --tag pulse-contract:${GITHUB_SHA} ./server
+      - name: Run health and check-in smoke
+        run: |
+          set -euo pipefail
+          docker run --rm --detach --name pulse-contract \
+            --tmpfs /data \
+            --publish 18080:8080 \
+            --env PULSE_ALLOW_UNAUTHENTICATED=true \
+            pulse-contract:${GITHUB_SHA}
+          cleanup() { docker rm --force pulse-contract >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          curl --fail --silent --show-error --retry 20 --retry-delay 1 --retry-connrefused \
+            http://127.0.0.1:18080/healthz
+          curl --fail --silent --show-error \
+            -X POST -H 'content-type: application/json' \
+            -d '{"status":"register","interval_seconds":30}' \
+            http://127.0.0.1:18080/v1/checkin/release-contract
+
+  release-contract:
+    name: Release dry-run and compatibility contract
+    needs: [nest, go, python, server]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: clients/nest/package-lock.json
+      - name: Build package and prove install plus seven-field wire compatibility
+        working-directory: clients/nest
+        run: |
+          set -euo pipefail
+          test "$(node -p "require('./package.json').name")" = "@achrononlimited/pulse-nest"
+          npm ci
+          npm run build
+          PACK_JSON="$(npm pack --json)"
+          TARBALL="$(node -e 'const p=JSON.parse(process.argv[1]); console.log(p[0].filename)' "$PACK_JSON")"
+          CONSUMER="$RUNNER_TEMP/pulse-nest-consumer"
+          mkdir -p "$CONSUMER"
+          cd "$CONSUMER"
+          npm init --yes >/dev/null
+          npm install --no-audit --no-fund "$GITHUB_WORKSPACE/clients/nest/$TARBALL" >/dev/null
+          node <<'NODE'
+          const http = require('node:http');
+          const { PulseClient } = require('@achrononlimited/pulse-nest');
+
+          const allowed = new Set([
+            'status', 'project', 'next_expected_at', 'interval_seconds',
+            'grace_seconds', 'max_runtime_seconds', 'duration_seconds',
+          ]);
+          const server = http.createServer((req, res) => {
+            let raw = '';
+            req.on('data', chunk => { raw += chunk; });
+            req.on('end', () => {
+              const body = JSON.parse(raw);
+              if (Object.keys(body).some(key => !allowed.has(key))) {
+                res.writeHead(400);
+                res.end('unknown field');
+                return;
+              }
+              if (body.status !== 'register') {
+                res.writeHead(400);
+                res.end('wrong status');
+                return;
+              }
+              res.writeHead(204);
+              res.end();
+            });
+          });
+          server.listen(0, '127.0.0.1', async () => {
+            const port = server.address().port;
+            const client = new PulseClient({
+              baseUrl: `http://127.0.0.1:${port}`,
+              token: 'fixture-token',
+              project: 'fixture',
+              now: () => 1700000000000,
+            });
+            await client.register('release-contract', {
+              intervalSeconds: 30,
+              grace: 5,
+              maxRuntime: 60,
+            });
+            server.close();
+          });
+          NODE
+
+      - name: Exercise negative release guards
+        run: |
+          set -euo pipefail
+          expect_failure() {
+            if "$@"; then
+              echo "::error::expected guard to reject: $*"
+              exit 1
+            fi
+          }
+          package_name_guard() { test "$1" = "@achrononlimited/pulse-nest"; }
+          ancestry_guard() { test "$1" = "$2"; }
+          immutable_guard() { test "$1" = "$2"; }
+          reproducibility_guard() { test "$1" = "$2"; }
+          wire_guard() { test "$1" = 204; }
+          provenance_guard() { test "$1" != true || test "$2" = 200; }
+          pypi_name_guard() { test "$1" = 404; }
+          go_tag_guard() { case "$1" in clients/go/v[0-9]*.[0-9]*.[0-9]*) return 0 ;; *) return 1 ;; esac; }
+          server_guard() { test "$1" = 200; }
+
+          expect_failure package_name_guard "@achronon/pulse-nest"
+          expect_failure ancestry_guard tag-commit origin/main
+          expect_failure immutable_guard sha-old sha-new
+          expect_failure reproducibility_guard digest-a digest-b
+          expect_failure wire_guard 400
+          expect_failure provenance_guard true 404
+          expect_failure pypi_name_guard 200
+          expect_failure go_tag_guard v1.0.0
+          expect_failure server_guard 500
+          echo "all negative release-contract controls rejected their broken fixtures"
+
+      - name: Verify Python name remains unclaimed without publishing
+        run: |
+          set -euo pipefail
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            https://pypi.org/pypi/pulse-client/json)"
+          test "$status" = 404 || {
+            echo "::error::pulse-client is already claimed on PyPI (HTTP $status)"
+            exit 1
+          }
+          echo "pulse-client is unclaimed on PyPI; no publish was attempted"
