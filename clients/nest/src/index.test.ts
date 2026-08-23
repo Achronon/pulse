@@ -1,4 +1,7 @@
+import 'reflect-metadata';
 import { describe, it, expect, vi } from 'vitest';
+import { Cron } from '@nestjs/schedule';
+import { SCHEDULE_CRON_OPTIONS } from '@nestjs/schedule/dist/schedule.constants';
 import { PulseClient, toSeconds, Pulse, configurePulse } from './index';
 
 interface Captured {
@@ -49,6 +52,40 @@ describe('PulseClient.wrap', () => {
     expect(reqs[1].body.grace_seconds).toBe(60);
     expect(reqs[1].body.next_expected_at).toBe(1_700_000_000 + 300);
     expect(reqs[1].auth).toBe('Bearer tok');
+  });
+
+  it('keeps the seven-field check-in contract unchanged', async () => {
+    const { client, reqs } = capturing();
+    await client.checkin('job', 'ok', { intervalSeconds: 60, grace: '1m', maxRuntime: '2m' }, 3);
+    expect(Object.keys(reqs[0].body).sort()).toEqual([
+      'duration_seconds',
+      'grace_seconds',
+      'interval_seconds',
+      'max_runtime_seconds',
+      'next_expected_at',
+      'project',
+      'status',
+    ]);
+  });
+
+  it('bounds a hung request and aborts it with the configured timeout', async () => {
+    let signal: AbortSignal | undefined;
+    const logger = vi.fn();
+    const fetchFn = vi.fn((_url: string | URL, init?: RequestInit) => {
+      signal = init?.signal;
+      return new Promise<Response>(() => {});
+    }) as unknown as typeof fetch;
+    const timeoutMs = 40;
+    const client = new PulseClient({ baseUrl: 'https://pulse.test', fetchFn, timeoutMs, logger });
+
+    const started = Date.now();
+    await client.checkin('hung-job', 'start');
+    const elapsed = Date.now() - started;
+
+    expect(elapsed).toBeLessThan(timeoutMs * 3);
+    expect(signal).toBeDefined();
+    expect(signal!.aborted).toBe(true);
+    expect(logger).toHaveBeenCalledWith(expect.stringContaining(`timed out after ${timeoutMs}ms`));
   });
 
   it('pings fail and rethrows on error', async () => {
@@ -106,7 +143,26 @@ describe('@Pulse decorator', () => {
     const out = await jobs.run();
     expect(out).toBe('ok');
     expect(jobs.ran).toBe(1); // `this` preserved
+    expect(Jobs.prototype.run.name).toBe('run');
     expect(reqs.map((r) => r.body.status)).toEqual(['start', 'ok']);
     expect(reqs[0].url).toBe('https://pulse.test/v1/checkin/decorated-job');
+  });
+
+  it('preserves real Nest schedule metadata in either decorator order', () => {
+    class Jobs {
+      @Cron('*/5 * * * *')
+      @Pulse('cron-first')
+      async cronThenPulse(): Promise<void> {}
+
+      @Pulse('pulse-first')
+      @Cron('*/5 * * * *')
+      async pulseThenCron(): Promise<void> {}
+    }
+
+    for (const name of ['cronThenPulse', 'pulseThenCron'] as const) {
+      const method = Jobs.prototype[name];
+      expect(method.name).toBe(name);
+      expect(Reflect.getMetadata(SCHEDULE_CRON_OPTIONS, method)).toMatchObject({ cronTime: '*/5 * * * *' });
+    }
   });
 });

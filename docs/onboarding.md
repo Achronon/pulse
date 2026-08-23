@@ -49,6 +49,10 @@ import { Pulse } from '@achrononlimited/pulse-nest';
 async expireStaleBookings() { /* ... */ }
 ```
 
+The Nest client preserves `@Cron` metadata in either decorator order; the order
+shown above is recommended. Pulse check-ins fail open and stop waiting after the
+default 10-second request timeout (`timeoutMs` can override it at configuration).
+
 ### Go
 
 ```go

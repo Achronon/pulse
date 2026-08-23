@@ -36,12 +36,15 @@ export interface PulseConfig {
   project?: string;
   /** Injectable fetch (defaults to global fetch); handy for tests. */
   fetchFn?: typeof fetch;
+  /** Maximum time in milliseconds allowed for one check-in request. */
+  timeoutMs?: number;
   /** Injectable clock in ms epoch (defaults to Date.now); handy for tests. */
   now?: () => number;
   logger?: (message: string, error?: unknown) => void;
 }
 
 const UNITS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
+const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** Coerce a number (seconds) or "10m"/"2h"/"90s" string to whole seconds. */
 export function toSeconds(v: DurationInput | undefined): number {
@@ -65,6 +68,7 @@ export class PulseClient {
   private readonly token: string;
   private readonly project: string;
   private readonly fetchFn: typeof fetch;
+  private readonly timeoutMs: number;
   private readonly now: () => number;
   private readonly logger: (message: string, error?: unknown) => void;
 
@@ -73,6 +77,9 @@ export class PulseClient {
     this.token = cfg.token ?? process.env.PULSE_TOKEN ?? '';
     this.project = cfg.project ?? process.env.PULSE_PROJECT ?? '';
     this.fetchFn = cfg.fetchFn ?? globalThis.fetch;
+    this.timeoutMs = cfg.timeoutMs !== undefined && Number.isFinite(cfg.timeoutMs)
+      ? Math.max(1, Math.floor(cfg.timeoutMs))
+      : DEFAULT_TIMEOUT_MS;
     this.now = cfg.now ?? Date.now;
     this.logger = cfg.logger ?? ((m, e) => console.warn(m, e ?? ''));
   }
@@ -105,18 +112,34 @@ export class PulseClient {
     if (maxRuntime) body.max_runtime_seconds = maxRuntime;
     if (durationSeconds) body.duration_seconds = durationSeconds;
 
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const res = await this.fetchFn(`${this.baseUrl}/v1/checkin/${slug}`, {
+      const request = this.fetchFn(`${this.baseUrl}/v1/checkin/${slug}`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
         },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
+      const timeout = new Promise<null>((resolve) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          resolve(null);
+        }, this.timeoutMs);
+      });
+      const res = await Promise.race([request, timeout]);
+      if (res === null) {
+        this.logger(`pulse: check-in ${slug} timed out after ${this.timeoutMs}ms`);
+        return;
+      }
       if (!res.ok) this.logger(`pulse: check-in ${slug}: status ${res.status}`);
     } catch (e) {
       this.logger(`pulse: check-in ${slug} failed`, e);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -156,6 +179,19 @@ export function getPulseClient(): PulseClient {
   return defaultClient;
 }
 
+type MetadataReflect = typeof Reflect & {
+  getMetadataKeys?: (target: object) => Array<string | symbol>;
+  getMetadata?: (key: string | symbol, target: object) => unknown;
+  defineMetadata?: (key: string | symbol, value: unknown, target: object) => void;
+};
+
+function copyMetadata(source: object, target: object): void {
+  const reflection = Reflect as MetadataReflect;
+  for (const key of reflection.getMetadataKeys?.(source) ?? []) {
+    reflection.defineMetadata?.(key, reflection.getMetadata?.(key, source), target);
+  }
+}
+
 /**
  * Method decorator that wraps the method with pulse check-ins using the default
  * client. Place alongside `@Cron(...)`.
@@ -163,10 +199,13 @@ export function getPulseClient(): PulseClient {
 export function Pulse(slug: string, options: PulseOptions = {}): MethodDecorator {
   return (_target, _propertyKey, descriptor: PropertyDescriptor): PropertyDescriptor => {
     const original = descriptor.value as (...args: unknown[]) => unknown;
-    descriptor.value = function (this: unknown, ...args: unknown[]) {
+    const wrapped = function (this: unknown, ...args: unknown[]) {
       const bound = (...a: unknown[]) => Promise.resolve(original.apply(this, a));
       return getPulseClient().wrap(slug, options, bound)(...args);
     };
+    Object.defineProperty(wrapped, 'name', { configurable: true, value: original.name });
+    copyMetadata(original, wrapped);
+    descriptor.value = wrapped;
     return descriptor;
   };
 }
