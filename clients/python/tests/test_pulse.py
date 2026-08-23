@@ -122,16 +122,27 @@ def test_decorator():
     assert [r["body"]["status"] for r in cap] == ["start", "ok"]
 
 
-def test_decorator_rejects_async_function_before_it_can_report_ok():
+def test_decorators_reject_async_functions_before_they_can_report_ok():
     async def work():
         raise RuntimeError("should never be called")
 
+    async def stream():
+        yield 1
+
     assert inspect.iscoroutinefunction(work)
-    with pytest.raises(TypeError, match="async functions"):
-        pulse.pulse("job")(work)
+    assert inspect.isasyncgenfunction(stream)
+    decorators = [
+        pulse.pulse("job"),
+        make_client([]).decorate("job"),
+    ]
+    for decorate in decorators:
+        for fn in (work, stream):
+            with pytest.raises(TypeError, match="async functions"):
+                decorate(fn)
 
 
-def test_module_decorator_resolves_default_client_at_call_time():
+def test_module_decorator_resolves_default_client_at_call_time(monkeypatch):
+    monkeypatch.setattr(pulse, "_default", None)
     cap = []
     disabled_http = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(204)))
     pulse.set_default(pulse.Client(base_url="", http=disabled_http))
@@ -140,7 +151,6 @@ def test_module_decorator_resolves_default_client_at_call_time():
     def work():
         return "done"
 
-    assert cap == []
     pulse.set_default(make_client(cap))
     assert work() == "done"
     assert [r["body"]["status"] for r in cap] == ["start", "ok"]

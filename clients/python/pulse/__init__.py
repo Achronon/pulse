@@ -42,7 +42,7 @@ _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
 def _ensure_sync(fn: Callable) -> None:
-    if inspect.iscoroutinefunction(fn):
+    if inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn):
         raise TypeError(
             "pulse decorators do not support async functions; "
             "use a synchronous entry point or a monitor() context around the awaited body"
