@@ -32,8 +32,10 @@ type Opts struct {
 	// Interval is a simple fixed period, used when Schedule is empty.
 	Interval time.Duration
 	// Grace is how long after next_expected before a run is considered late.
+	// Use time.Second (or another time.Duration constant), not a bare integer.
 	Grace time.Duration
-	// MaxRuntime bounds a run; used for hung-job detection.
+	// MaxRuntime bounds a run; used for hung-job detection. Use time.Second (or
+	// another time.Duration constant), not a bare integer.
 	MaxRuntime time.Duration
 	// Project overrides the client's default project for this monitor.
 	Project string
@@ -46,7 +48,9 @@ type Client struct {
 	Project string
 	HTTP    *http.Client
 
-	now  func() time.Time
+	// Now is an injectable clock for deterministic tests. It defaults to time.Now
+	// when using Default or when left nil in a struct literal.
+	Now  func() time.Time
 	logf func(string, ...any)
 }
 
@@ -61,14 +65,14 @@ func Default() *Client {
 		Token:   os.Getenv("PULSE_TOKEN"),
 		Project: os.Getenv("PULSE_PROJECT"),
 		HTTP:    &http.Client{Timeout: 10 * time.Second},
-		now:     time.Now,
+		Now:     time.Now,
 		logf:    log.Printf,
 	}
 }
 
 func (c *Client) clock() time.Time {
-	if c.now != nil {
-		return c.now()
+	if c.Now != nil {
+		return c.Now()
 	}
 	return time.Now()
 }
@@ -76,7 +80,9 @@ func (c *Client) clock() time.Time {
 func (c *Client) warn(format string, args ...any) {
 	if c.logf != nil {
 		c.logf(format, args...)
+		return
 	}
+	log.Printf(format, args...)
 }
 
 // Register announces a monitor at process start, before its first run. This lets
@@ -90,6 +96,12 @@ func (c *Client) Register(ctx context.Context, slug string, o Opts) {
 func (c *Client) Run(ctx context.Context, slug string, o Opts, fn func(context.Context) error) error {
 	c.send(ctx, slug, c.payload("start", o, 0))
 	started := c.clock()
+	defer func() {
+		if r := recover(); r != nil {
+			c.send(ctx, slug, c.payload("fail", o, c.clock().Sub(started).Seconds()))
+			panic(r)
+		}
+	}()
 	err := fn(ctx)
 	dur := c.clock().Sub(started).Seconds()
 	status := "ok"
@@ -120,10 +132,18 @@ func (c *Client) payload(status string, o Opts, dur float64) checkinBody {
 		Project:           project,
 		NextExpectedAt:    c.nextExpected(o),
 		IntervalSeconds:   int64(o.Interval.Seconds()),
-		GraceSeconds:      int64(o.Grace.Seconds()),
-		MaxRuntimeSeconds: int64(o.MaxRuntime.Seconds()),
+		GraceSeconds:      c.durationSeconds("Grace", o.Grace),
+		MaxRuntimeSeconds: c.durationSeconds("MaxRuntime", o.MaxRuntime),
 		DurationSeconds:   dur,
 	}
+}
+
+func (c *Client) durationSeconds(name string, d time.Duration) int64 {
+	seconds := int64(d / time.Second)
+	if d != 0 && seconds == 0 {
+		c.warn("pulse: %s=%s is below one second and will be sent as 0; use time.Second units", name, d)
+	}
+	return seconds
 }
 
 // nextExpected computes the next due time from the cron schedule, falling back to
