@@ -1,6 +1,8 @@
+import inspect
 import json
 
 import httpx
+import pytest
 import pulse
 
 
@@ -63,6 +65,30 @@ def test_monitor_ok():
     assert cap[1]["auth"] == "Bearer tok"
 
 
+def test_wire_contract_unchanged():
+    cap = []
+    c = make_client(cap)
+    c._send(
+        "job",
+        "ok",
+        schedule="*/5 * * * *",
+        interval_s=300,
+        grace_s=60,
+        max_runtime_s=600,
+        project="ops",
+        duration=3,
+    )
+    assert set(cap[0]["body"]) == {
+        "status",
+        "project",
+        "next_expected_at",
+        "interval_seconds",
+        "grace_seconds",
+        "max_runtime_seconds",
+        "duration_seconds",
+    }
+
+
 def test_monitor_fail_propagates():
     cap = []
     c = make_client(cap)
@@ -93,6 +119,40 @@ def test_decorator():
         return x * 2
 
     assert work(21) == 42
+    assert [r["body"]["status"] for r in cap] == ["start", "ok"]
+
+
+def test_decorators_reject_async_functions_before_they_can_report_ok():
+    async def work():
+        raise RuntimeError("should never be called")
+
+    async def stream():
+        yield 1
+
+    assert inspect.iscoroutinefunction(work)
+    assert inspect.isasyncgenfunction(stream)
+    decorators = [
+        pulse.pulse("job"),
+        make_client([]).decorate("job"),
+    ]
+    for decorate in decorators:
+        for fn in (work, stream):
+            with pytest.raises(TypeError, match="async functions"):
+                decorate(fn)
+
+
+def test_module_decorator_resolves_default_client_at_call_time(monkeypatch):
+    monkeypatch.setattr(pulse, "_default", None)
+    cap = []
+    disabled_http = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(204)))
+    pulse.set_default(pulse.Client(base_url="", http=disabled_http))
+
+    @pulse.pulse("job", interval=60)
+    def work():
+        return "done"
+
+    pulse.set_default(make_client(cap))
+    assert work() == "done"
     assert [r["body"]["status"] for r in cap] == ["start", "ok"]
 
 
