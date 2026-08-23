@@ -17,6 +17,11 @@ err := pulse.Run(ctx, "limesindex-refresh",
 expected run time is computed locally from `Schedule` (or `Interval`) and pushed to the
 server — the server does no cron parsing.
 
+`Grace` and `MaxRuntime` are Go `time.Duration` values: use `time.Second`,
+`time.Minute`, or another duration constant (for example, `Grace: 2*time.Minute`),
+not a bare integer that is interpreted as nanoseconds. A non-zero sub-second value is
+warned about and sent as zero rather than being silently mistaken for seconds.
+
 Announce a monitor at startup (so a job that never fires is still detectable):
 
 ```go

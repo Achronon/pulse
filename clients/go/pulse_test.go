@@ -1,11 +1,15 @@
 package pulse
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,7 +47,7 @@ func testClient(url string) *Client {
 		Token:   "tok",
 		Project: "ops",
 		HTTP:    &http.Client{Timeout: 5 * time.Second},
-		now:     func() time.Time { return time.Unix(1_700_000_000, 0) },
+		Now:     func() time.Time { return time.Unix(1_700_000_000, 0) },
 		logf:    func(string, ...any) {},
 	}
 }
@@ -91,6 +95,30 @@ func TestRunFailReportsAndPropagates(t *testing.T) {
 	}
 	if cap.reqs[1].Status != "fail" {
 		t.Errorf("terminal status = %q, want fail", cap.reqs[1].Status)
+	}
+}
+
+func TestRunPanicReportsFailAndPropagates(t *testing.T) {
+	srv, cap := newCaptureServer(t)
+	c := testClient(srv.URL)
+
+	const sentinel = "panic sentinel"
+	didPanic := false
+	func() {
+		defer func() {
+			if got := recover(); got == sentinel {
+				didPanic = true
+			}
+		}()
+		c.Run(context.Background(), "job", Opts{Interval: time.Minute}, func(context.Context) error {
+			panic(sentinel)
+		})
+	}()
+	if !didPanic {
+		t.Fatal("Run did not re-panic with the original value")
+	}
+	if len(cap.reqs) != 2 || cap.reqs[1].Status != "fail" {
+		t.Fatalf("expected start+fail after panic, got %+v", cap.reqs)
 	}
 }
 
@@ -150,5 +178,72 @@ func TestRegister(t *testing.T) {
 	}
 	if cap.reqs[0].NextExpectedAt == 0 {
 		t.Error("register should carry next_expected_at")
+	}
+}
+
+func TestDurationUnitTrapIsLoud(t *testing.T) {
+	var warnings []string
+	c := testClient("")
+	c.logf = func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
+	}
+	body := c.payload("register", Opts{Grace: 600, MaxRuntime: 3600}, 0)
+	if body.GraceSeconds != 0 || body.MaxRuntimeSeconds != 0 {
+		t.Fatalf("sub-second durations = %+v, want both wire values 0", body)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("got %d warnings, want 2: %v", len(warnings), warnings)
+	}
+	for _, warning := range warnings {
+		if !strings.Contains(warning, "time.Second") {
+			t.Errorf("warning %q does not explain the unit fix", warning)
+		}
+	}
+}
+
+func TestStructLiteralUsesDefaultLoggerForInvalidSchedule(t *testing.T) {
+	var buf bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	clients := []*Client{{}, Default()}
+	for _, c := range clients {
+		_ = c.nextExpected(Opts{Schedule: "not-a-cron"})
+	}
+	if got := buf.String(); strings.Count(got, "pulse: invalid schedule") != len(clients) {
+		t.Fatalf("invalid schedule warnings = %q, want %d warnings", got, len(clients))
+	}
+}
+
+func TestWireContractHasSevenFields(t *testing.T) {
+	c := testClient("")
+	body := c.payload("ok", Opts{
+		Schedule:   "*/5 * * * *",
+		Interval:   5 * time.Minute,
+		Grace:      2 * time.Minute,
+		MaxRuntime: 10 * time.Minute,
+		Project:    "ops",
+	}, 3)
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"status": true, "project": true, "next_expected_at": true,
+		"interval_seconds": true, "grace_seconds": true,
+		"max_runtime_seconds": true, "duration_seconds": true,
+	}
+	if len(fields) != len(want) {
+		t.Fatalf("wire fields = %v, want exactly %v", fields, want)
+	}
+	for field := range want {
+		if _, ok := fields[field]; !ok {
+			t.Errorf("wire field %q missing from %v", field, fields)
+		}
 	}
 }
