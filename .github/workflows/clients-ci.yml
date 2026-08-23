@@ -127,17 +127,22 @@ jobs:
             'status', 'project', 'next_expected_at', 'interval_seconds',
             'grace_seconds', 'max_runtime_seconds', 'duration_seconds',
           ]);
+          let seen = false;
+          let invalid = false;
           const server = http.createServer((req, res) => {
             let raw = '';
             req.on('data', chunk => { raw += chunk; });
             req.on('end', () => {
+              seen = true;
               const body = JSON.parse(raw);
               if (Object.keys(body).some(key => !allowed.has(key))) {
+                invalid = true;
                 res.writeHead(400);
                 res.end('unknown field');
                 return;
               }
               if (body.status !== 'register') {
+                invalid = true;
                 res.writeHead(400);
                 res.end('wrong status');
                 return;
@@ -159,7 +164,14 @@ jobs:
               grace: 5,
               maxRuntime: 60,
             });
-            server.close();
+            server.close(() => {
+              if (invalid || !seen) {
+                console.error('wire compatibility smoke rejected the client body');
+                process.exitCode = 1;
+              } else {
+                console.log('wire compatibility smoke passed');
+              }
+            });
           });
           NODE
 
