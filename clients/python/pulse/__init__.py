@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import inspect
 import logging
 import os
 import time
@@ -38,6 +39,14 @@ log = logging.getLogger("pulse")
 Duration = Union[int, float, str, None]
 
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _ensure_sync(fn: Callable) -> None:
+    if inspect.iscoroutinefunction(fn):
+        raise TypeError(
+            "pulse decorators do not support async functions; "
+            "use a synchronous entry point or a monitor() context around the awaited body"
+        )
 
 
 def _to_seconds(v: Duration) -> int:
@@ -180,6 +189,8 @@ class Client:
         """Decorator form of monitor()."""
 
         def wrap(fn):
+            _ensure_sync(fn)
+
             @functools.wraps(fn)
             def inner(*args, **kw):
                 with self.monitor(slug, **kwargs):
@@ -210,7 +221,18 @@ def set_default(client: Client) -> None:
 
 def pulse(slug: str, **kwargs):
     """Decorator using the default client: @pulse.pulse('slug', schedule=...)."""
-    return _std().decorate(slug, **kwargs)
+
+    def wrap(fn):
+        _ensure_sync(fn)
+
+        @functools.wraps(fn)
+        def inner(*args, **kw):
+            with _std().monitor(slug, **kwargs):
+                return fn(*args, **kw)
+
+        return inner
+
+    return wrap
 
 
 def monitor(slug: str, **kwargs):
