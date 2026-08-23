@@ -79,6 +79,44 @@ type CheckIn struct {
 
 var bucket = []byte("monitors")
 
+// decodeMonitor validates the persisted object shape before decoding it. The
+// store has no schema version marker, so a renamed field would otherwise be
+// silently ignored and turn into a zero value. Missing known fields remain
+// compatible with older rows; unknown fields are surfaced as unreadable rather
+// than changing the JSON shape written by this binary.
+func decodeMonitor(raw []byte, m *Monitor) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	if fields == nil {
+		return errors.New("monitor JSON must be an object")
+	}
+	for field := range fields {
+		switch field {
+		case "slug", "project", "last_success", "last_start", "last_failure",
+			"next_expected", "grace_seconds", "max_runtime_seconds", "interval_seconds",
+			"last_duration", "runs_ok", "runs_fail", "last_seen":
+		default:
+			return fmt.Errorf("unknown monitor field %q", field)
+		}
+	}
+	return json.Unmarshal(raw, m)
+}
+
+// projectFromUnreadable recovers only the ownership field from a row that
+// cannot be decoded as a complete Monitor. A malformed or wrongly typed
+// project remains empty and is therefore treated as unclaimed by repair.
+func projectFromUnreadable(raw []byte) string {
+	var identity struct {
+		Project string `json:"project"`
+	}
+	if err := json.Unmarshal(raw, &identity); err != nil {
+		return ""
+	}
+	return identity.Project
+}
+
 // Store is a bbolt-backed monitor store.
 type Store struct {
 	db  *bolt.DB
@@ -120,8 +158,16 @@ func (s *Store) Apply(slug string, c CheckIn) (Monitor, error) {
 		b := tx.Bucket(bucket)
 		m := Monitor{Slug: slug}
 		if raw := b.Get([]byte(slug)); raw != nil {
-			if e := json.Unmarshal(raw, &m); e != nil {
-				return fmt.Errorf("unmarshal %s: %w", slug, e)
+			if e := decodeMonitor(raw, &m); e != nil {
+				if c.Status != StatusRegister {
+					return fmt.Errorf("unmarshal %s: %w", slug, e)
+				}
+				// Preserve a well-typed project identity so repair cannot bypass the
+				// ownership guard. If the project itself is unavailable, treat the
+				// row as unclaimed: an authoritative register can still self-heal it
+				// without adding an admin repair endpoint, while the unreadable-row
+				// gauge keeps this exceptional state visible to operators.
+				m = Monitor{Slug: slug, Project: projectFromUnreadable(raw)}
 			}
 		}
 		// Ownership guard: a check-in scoped to one project must not mutate a
@@ -226,25 +272,27 @@ func (s *Store) Get(slug string) (Monitor, bool, error) {
 			return nil
 		}
 		found = true
-		return json.Unmarshal(raw, &m)
+		return decodeMonitor(raw, &m)
 	})
 	return m, found, err
 }
 
-// List returns all monitors.
-func (s *Store) List() ([]Monitor, error) {
+// List returns all readable monitors and the number of unreadable rows.
+func (s *Store) List() ([]Monitor, int, error) {
 	var ms []Monitor
+	var unreadable int
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucket).ForEach(func(_, v []byte) error {
 			var m Monitor
-			if e := json.Unmarshal(v, &m); e != nil {
-				return e
+			if e := decodeMonitor(v, &m); e != nil {
+				unreadable++
+				return nil
 			}
 			ms = append(ms, m)
 			return nil
 		})
 	})
-	return ms, err
+	return ms, unreadable, err
 }
 
 // ExpireOlderThan removes monitors not seen within ttl and returns the count
@@ -260,7 +308,10 @@ func (s *Store) ExpireOlderThan(ttl time.Duration) (int, error) {
 		c := b.Cursor()
 		for k, v := c.First(); k != nil; k, v = c.Next() {
 			var m Monitor
-			if e := json.Unmarshal(v, &m); e != nil {
+			if e := decodeMonitor(v, &m); e != nil {
+				kk := make([]byte, len(k))
+				copy(kk, k)
+				keys = append(keys, kk)
 				continue
 			}
 			// Reap only a monitor that is BOTH unseen for the TTL window AND past

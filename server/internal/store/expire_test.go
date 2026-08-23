@@ -79,3 +79,20 @@ func TestExpireReapsTrulyStale(t *testing.T) {
 		t.Error("truly stale monitor should be reaped")
 	}
 }
+
+func TestExpireReapsUnreadableRow(t *testing.T) {
+	s := newTestStore(t)
+	s.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
+	putRawMonitor(t, s, "poisoned", []byte(`{"slug":"poisoned","runs_ok":"5"}`))
+
+	n, err := s.ExpireOlderThan(24 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("expired %d unreadable rows, want 1", n)
+	}
+	if _, found, _ := s.Get("poisoned"); found {
+		t.Error("unreadable row should be reaped")
+	}
+}

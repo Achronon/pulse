@@ -23,6 +23,7 @@ type Collector struct {
 	lastDuration *prometheus.Desc
 	runs         *prometheus.Desc
 	info         *prometheus.Desc
+	unreadable   *prometheus.Desc
 }
 
 // NewCollector builds a Collector reading from s.
@@ -39,6 +40,7 @@ func NewCollector(s *store.Store) *Collector {
 		lastDuration: prometheus.NewDesc("pulse_last_duration_seconds", "Duration of the last completed run.", labels, nil),
 		runs:         prometheus.NewDesc("pulse_runs_total", "Total runs by terminal status.", []string{"monitor", "project", "status"}, nil),
 		info:         prometheus.NewDesc("pulse_monitor_info", "Monitor registration info; constant 1.", labels, nil),
+		unreadable:   prometheus.NewDesc("pulse_store_unreadable_rows", "Number of persisted monitor rows unreadable during the last scrape.", nil, nil),
 	}
 }
 
@@ -46,7 +48,7 @@ func NewCollector(s *store.Store) *Collector {
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		c.lastSuccess, c.lastStart, c.lastFailure, c.nextExpected,
-		c.grace, c.maxRuntime, c.lastDuration, c.runs, c.info,
+		c.grace, c.maxRuntime, c.lastDuration, c.runs, c.info, c.unreadable,
 	} {
 		ch <- d
 	}
@@ -54,11 +56,12 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements prometheus.Collector.
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
-	monitors, err := c.store.List()
+	monitors, unreadable, err := c.store.List()
 	if err != nil {
 		ch <- prometheus.NewInvalidMetric(c.info, err)
 		return
 	}
+	ch <- prometheus.MustNewConstMetric(c.unreadable, prometheus.GaugeValue, float64(unreadable))
 	for _, m := range monitors {
 		gauge := func(d *prometheus.Desc, v float64) {
 			ch <- prometheus.MustNewConstMetric(d, prometheus.GaugeValue, v, m.Slug, m.Project)

@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 func newTestStore(t *testing.T) *Store {
@@ -14,6 +16,16 @@ func newTestStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
+}
+
+func putRawMonitor(t *testing.T, s *Store, slug string, raw []byte) {
+	t.Helper()
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucket).Put([]byte(slug), raw)
+	})
+	if err != nil {
+		t.Fatalf("put raw monitor %q: %v", slug, err)
+	}
 }
 
 func TestValidSlug(t *testing.T) {
@@ -99,6 +111,7 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 	if _, err := s.Apply("job", CheckIn{Status: StatusOK, Project: "p", IntervalSeconds: 60}); err != nil {
 		t.Fatal(err)
 	}
+	putRawMonitor(t, s, "poisoned", []byte(`{"slug":"poisoned","project":"p","runs_ok":"5"}`))
 	_ = s.Close()
 
 	s2, err := Open(path)
@@ -112,6 +125,89 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 	}
 	if m.Project != "p" || m.RunsOK != 1 {
 		t.Errorf("state not persisted: %+v", m)
+	}
+	if _, found, err := s2.Get("poisoned"); !found || err == nil {
+		t.Fatalf("poisoned row after reopen: found=%v err=%v, want detectable error", found, err)
+	}
+}
+
+func TestListIsolatesUnreadableRows(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.Apply("good", CheckIn{Status: StatusOK, Project: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	putRawMonitor(t, s, "poisoned", []byte(`{"slug":"poisoned","project":"p","runs_ok":"5"}`))
+
+	monitors, unreadable, err := s.List()
+	if err != nil {
+		t.Fatalf("List should survive one unreadable row: %v", err)
+	}
+	if unreadable != 1 {
+		t.Fatalf("List counted %d unreadable rows, want 1", unreadable)
+	}
+	if len(monitors) != 1 || monitors[0].Slug != "good" {
+		t.Fatalf("List returned %+v, want only the valid monitor", monitors)
+	}
+}
+
+func TestRegisterRepairsUnreadableRow(t *testing.T) {
+	s := newTestStore(t)
+	putRawMonitor(t, s, "repair-me", []byte(`{"slug":"repair-me","project":"p","runs_ok":"5"}`))
+
+	if _, err := s.Apply("repair-me", CheckIn{
+		Status:          StatusRegister,
+		Project:         "p",
+		IntervalSeconds: 60,
+	}); err != nil {
+		t.Fatalf("authoritative register should repair unreadable row: %v", err)
+	}
+	m, found, err := s.Get("repair-me")
+	if err != nil || !found {
+		t.Fatalf("repaired row: found=%v err=%v", found, err)
+	}
+	if m.Slug != "repair-me" || m.Project != "p" || m.IntervalSeconds != 60 {
+		t.Fatalf("repaired state = %+v", m)
+	}
+}
+
+func TestRegisterCannotCrossProjectRepairUnreadableRow(t *testing.T) {
+	s := newTestStore(t)
+	putRawMonitor(t, s, "owned-poison", []byte(`{"slug":"owned-poison","project":"empera","runs_ok":"5"}`))
+
+	if _, err := s.Apply("owned-poison", CheckIn{
+		Status:  StatusRegister,
+		Project: "ops",
+	}); err != ErrProjectMismatch {
+		t.Fatalf("cross-project repair error = %v, want %v", err, ErrProjectMismatch)
+	}
+	if _, found, err := s.Get("owned-poison"); !found || err == nil {
+		t.Fatalf("poisoned row should remain unreadable after rejected repair: found=%v err=%v", found, err)
+	}
+}
+
+func TestListDetectsRenamedPersistedField(t *testing.T) {
+	s := newTestStore(t)
+	putRawMonitor(t, s, "renamed", []byte(`{"slug":"renamed","project":"p","last_successful":1700000000}`))
+
+	_, found, err := s.Get("renamed")
+	if !found {
+		t.Fatal("renamed-field row should still be found")
+	}
+	if err == nil {
+		t.Fatal("renamed persisted field must be detectable, not silently decoded as zero")
+	}
+}
+
+func TestCurrentPersistedSchemaRemainsReadable(t *testing.T) {
+	s := newTestStore(t)
+	putRawMonitor(t, s, "fixture", []byte(`{"slug":"fixture","project":"p","last_success":1700000001,"last_start":1700000002,"last_failure":1700000003,"next_expected":1700000060,"grace_seconds":30,"max_runtime_seconds":120,"interval_seconds":60,"last_duration":1.5,"runs_ok":4,"runs_fail":1,"last_seen":1700000004}`))
+
+	m, found, err := s.Get("fixture")
+	if err != nil || !found {
+		t.Fatalf("current persisted fixture: found=%v err=%v", found, err)
+	}
+	if m.LastSuccess != 1700000001 || m.RunsOK != 4 || m.LastDuration != 1.5 {
+		t.Fatalf("fixture decoded incorrectly: %+v", m)
 	}
 }
 
