@@ -24,6 +24,11 @@ var ErrProjectMismatch = errors.New("monitor owned by a different project")
 // ErrNegativeValue is returned when a check-in carries a negative duration/timestamp.
 var ErrNegativeValue = errors.New("negative timing value")
 
+// ErrInvalidSeverity is returned when a check-in supplies an unsupported
+// severity. Severity is emitted as a Prometheus label, so the accepted set is
+// deliberately closed to prevent unbounded label cardinality.
+var ErrInvalidSeverity = errors.New("invalid severity")
+
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // ValidSlug reports whether s is an acceptable monitor slug.
@@ -48,11 +53,31 @@ func ValidStatus(s string) bool {
 	return false
 }
 
+const (
+	SeverityWarning  = "warning"
+	SeverityCritical = "critical"
+)
+
+// ValidSeverity reports whether s is one of the supported monitor severities.
+func ValidSeverity(s string) bool {
+	return s == SeverityWarning || s == SeverityCritical
+}
+
+// EffectiveSeverity returns the compatibility default for rows written before
+// severity was added to the monitor schema, or for an otherwise empty value.
+func EffectiveSeverity(s string) string {
+	if ValidSeverity(s) {
+		return s
+	}
+	return SeverityWarning
+}
+
 // Monitor is the persisted state for a single monitored job.
 // All timestamps are unix seconds; 0 means "never".
 type Monitor struct {
 	Slug              string  `json:"slug"`
 	Project           string  `json:"project"`
+	Severity          string  `json:"severity"`
 	LastSuccess       int64   `json:"last_success"`
 	LastStart         int64   `json:"last_start"`
 	LastFailure       int64   `json:"last_failure"`
@@ -70,6 +95,7 @@ type Monitor struct {
 type CheckIn struct {
 	Status            Status
 	Project           string
+	Severity          *string
 	NextExpectedAt    int64
 	IntervalSeconds   int64
 	GraceSeconds      int64
@@ -111,6 +137,9 @@ func (s *Store) Apply(slug string, c CheckIn) (Monitor, error) {
 	if !ValidStatus(string(c.Status)) {
 		return Monitor{}, fmt.Errorf("invalid status %q", c.Status)
 	}
+	if c.Severity != nil && !ValidSeverity(*c.Severity) {
+		return Monitor{}, ErrInvalidSeverity
+	}
 	if c.GraceSeconds < 0 || c.MaxRuntimeSeconds < 0 || c.IntervalSeconds < 0 ||
 		c.NextExpectedAt < 0 || c.DurationSeconds < 0 {
 		return Monitor{}, ErrNegativeValue
@@ -124,6 +153,7 @@ func (s *Store) Apply(slug string, c CheckIn) (Monitor, error) {
 				return fmt.Errorf("unmarshal %s: %w", slug, e)
 			}
 		}
+		m.Severity = EffectiveSeverity(m.Severity)
 		// Ownership guard: a check-in scoped to one project must not mutate a
 		// monitor that already belongs to another. (A wildcard/admin token sends
 		// an empty project and is exempt.)
@@ -134,6 +164,14 @@ func (s *Store) Apply(slug string, c CheckIn) (Monitor, error) {
 		m.LastSeen = now
 		if c.Project != "" {
 			m.Project = c.Project
+		}
+		// A supplied severity is an explicit update. A registration without one
+		// resets to the compatibility default, while ordinary legacy pings keep
+		// the registered value.
+		if c.Severity != nil {
+			m.Severity = *c.Severity
+		} else if c.Status == StatusRegister {
+			m.Severity = SeverityWarning
 		}
 		// next_expected: an explicit client-computed timestamp wins (full cron
 		// precision); otherwise fall back to now+interval (simple-period path).
@@ -226,7 +264,11 @@ func (s *Store) Get(slug string) (Monitor, bool, error) {
 			return nil
 		}
 		found = true
-		return json.Unmarshal(raw, &m)
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return err
+		}
+		m.Severity = EffectiveSeverity(m.Severity)
+		return nil
 	})
 	return m, found, err
 }
@@ -240,6 +282,7 @@ func (s *Store) List() ([]Monitor, error) {
 			if e := json.Unmarshal(v, &m); e != nil {
 				return e
 			}
+			m.Severity = EffectiveSeverity(m.Severity)
 			ms = append(ms, m)
 			return nil
 		})

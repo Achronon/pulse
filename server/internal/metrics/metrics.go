@@ -38,7 +38,7 @@ func NewCollector(s *store.Store) *Collector {
 		maxRuntime:   prometheus.NewDesc("pulse_max_runtime_seconds", "Max expected runtime, used for hung-job detection.", labels, nil),
 		lastDuration: prometheus.NewDesc("pulse_last_duration_seconds", "Duration of the last completed run.", labels, nil),
 		runs:         prometheus.NewDesc("pulse_runs_total", "Total runs by terminal status.", []string{"monitor", "project", "status"}, nil),
-		info:         prometheus.NewDesc("pulse_monitor_info", "Monitor registration info; constant 1.", labels, nil),
+		info:         prometheus.NewDesc("pulse_monitor_info", "Monitor registration info; constant 1.", []string{"monitor", "project", "severity"}, nil),
 	}
 }
 
@@ -63,7 +63,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		gauge := func(d *prometheus.Desc, v float64) {
 			ch <- prometheus.MustNewConstMetric(d, prometheus.GaugeValue, v, m.Slug, m.Project)
 		}
-		gauge(c.info, 1)
+		ch <- prometheus.MustNewConstMetric(c.info, prometheus.GaugeValue, 1, m.Slug, m.Project, store.EffectiveSeverity(m.Severity))
 		// last_success and grace are ALWAYS emitted (even when 0) because the alert
 		// rules combine them with binary operators, and PromQL drops samples that
 		// lack a matching series on the other side:
