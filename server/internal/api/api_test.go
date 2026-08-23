@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -8,20 +10,27 @@ import (
 	"testing"
 
 	"github.com/Achronon/pulse/server/internal/store"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func newTestServer(t *testing.T, auth *Authenticator, allowUnauth bool) (*httptest.Server, *store.Store) {
+	ts, st, _ := newInstrumentedTestServer(t, auth, allowUnauth)
+	return ts, st
+}
+
+func newInstrumentedTestServer(t *testing.T, auth *Authenticator, allowUnauth bool) (*httptest.Server, *store.Store, *Metrics) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "pulse.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	instrumentation := NewMetrics()
 	mux := http.NewServeMux()
-	New(st, auth, allowUnauth).RegisterRoutes(mux)
+	NewWithMetrics(st, auth, allowUnauth, instrumentation).RegisterRoutes(mux)
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
-	return ts, st
+	return ts, st, instrumentation
 }
 
 func post(t *testing.T, ts *httptest.Server, slug, token, body string) *http.Response {
@@ -38,6 +47,41 @@ func post(t *testing.T, ts *httptest.Server, slug, token, body string) *http.Res
 		t.Fatal(err)
 	}
 	return resp
+}
+
+func gatheredCounterValue(t *testing.T, instrumentation *Metrics, name string, labels map[string]string) float64 {
+	t.Helper()
+	reg := prometheus.NewRegistry()
+	instrumentation.Register(reg)
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, metric := range mf.GetMetric() {
+			matches := true
+			for key, want := range labels {
+				found := false
+				for _, label := range metric.GetLabel() {
+					if label.GetName() == key && label.GetValue() == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				return metric.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
 }
 
 func TestCheckinRequiresAuth(t *testing.T) {
@@ -131,5 +175,72 @@ func TestNoTokenFailsClosedByDefault(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 (must fail closed on missing token)", resp.StatusCode)
+	}
+}
+
+func TestCheckinOutcomeMetrics(t *testing.T) {
+	auth := NewAuthenticator("", map[string]string{"tok-emp": "empera", "tok-ops": "ops"})
+	ts, _, instrumentation := newInstrumentedTestServer(t, auth, false)
+
+	resp := post(t, ts, "job", "tok-emp", `{"status":"ok","project":"empera"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("valid check-in status = %d, want 204", resp.StatusCode)
+	}
+	resp = post(t, ts, "job-unauthorized", "wrong", `{"status":"ok"}`)
+	resp.Body.Close()
+	resp = post(t, ts, "job-invalid", "tok-emp", `{"status":"ok","unknown":1}`)
+	resp.Body.Close()
+	resp = post(t, ts, "job", "tok-ops", `{"status":"ok"}`)
+	resp.Body.Close()
+
+	for _, outcome := range []string{"ok", "unauthorized", "invalid", "forbidden"} {
+		if got := gatheredCounterValue(t, instrumentation, "pulse_checkins_total", map[string]string{"outcome": outcome}); got != 1 {
+			t.Errorf("check-in outcome %q = %v, want 1", outcome, got)
+		}
+	}
+}
+
+func TestStoreWriteErrorsAreCountedAndLogged(t *testing.T) {
+	ts, st, instrumentation := newInstrumentedTestServer(t, NewAuthenticator("secret", nil), false)
+	_ = st.Close()
+
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	resp := post(t, ts, "write-error", "secret", `{"status":"ok"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("store error status = %d, want 500", resp.StatusCode)
+	}
+	if got := gatheredCounterValue(t, instrumentation, "pulse_store_write_errors_total", nil); got != 1 {
+		t.Errorf("store write errors = %v, want 1", got)
+	}
+	if !strings.Contains(logs.String(), "check-in store write failed") || !strings.Contains(logs.String(), "write-error") {
+		t.Errorf("store write log = %q, want safe error with slug", logs.String())
+	}
+}
+
+func TestHealthzProbesStore(t *testing.T) {
+	ts, st, _ := newInstrumentedTestServer(t, NewAuthenticator("secret", nil), false)
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthy status = %d, want 200", resp.StatusCode)
+	}
+
+	_ = st.Close()
+	resp, err = http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("closed-store status = %d, want 503", resp.StatusCode)
 	}
 }

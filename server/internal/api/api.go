@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/Achronon/pulse/server/internal/store"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // tokenEntry binds a bearer token to a project. A project of "" is a wildcard
@@ -22,6 +24,45 @@ type tokenEntry struct {
 // Authenticator validates bearer tokens in constant time.
 type Authenticator struct {
 	entries []tokenEntry
+}
+
+// Metrics contains process-scoped counters for the server's own ingest and
+// storage outcomes. Labels are intentionally closed and never include slug,
+// project, token, or remote address.
+type Metrics struct {
+	checkins        *prometheus.CounterVec
+	storeWriteErrs  prometheus.Counter
+	monitorsExpired prometheus.Counter
+}
+
+// NewMetrics creates the counters used by the HTTP surface and expiry loop.
+func NewMetrics() *Metrics {
+	return &Metrics{
+		checkins: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "pulse_checkins_total",
+			Help: "Check-in requests by closed outcome class.",
+		}, []string{"outcome"}),
+		storeWriteErrs: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "pulse_store_write_errors_total",
+			Help: "Store write failures while applying check-ins.",
+		}),
+		monitorsExpired: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "pulse_monitors_expired_total",
+			Help: "Monitors removed by the TTL expiry sweep.",
+		}),
+	}
+}
+
+// Register adds the server counters to a Prometheus registry.
+func (m *Metrics) Register(reg prometheus.Registerer) {
+	reg.MustRegister(m.checkins, m.storeWriteErrs, m.monitorsExpired)
+}
+
+// RecordExpired records monitors removed by a successful TTL sweep.
+func (m *Metrics) RecordExpired(n int) {
+	if n > 0 {
+		m.monitorsExpired.Add(float64(n))
+	}
 }
 
 // NewAuthenticator builds an authenticator from an optional single wildcard
@@ -59,21 +100,39 @@ type Server struct {
 	store       *store.Store
 	auth        *Authenticator
 	allowUnauth bool
+	metrics     *Metrics
 }
 
 // New returns a Server. allowUnauth must be set explicitly (dev only) to permit
 // unauthenticated check-ins when no token is configured; otherwise the endpoint
 // fails closed.
 func New(s *store.Store, a *Authenticator, allowUnauth bool) *Server {
-	return &Server{store: s, auth: a, allowUnauth: allowUnauth}
+	return NewWithMetrics(s, a, allowUnauth, NewMetrics())
+}
+
+// NewWithMetrics returns a Server using the supplied process-scoped metrics.
+// It is separate from New so existing embedders keep the simple constructor.
+func NewWithMetrics(s *store.Store, a *Authenticator, allowUnauth bool, m *Metrics) *Server {
+	if m == nil {
+		m = NewMetrics()
+	}
+	return &Server{store: s, auth: a, allowUnauth: allowUnauth, metrics: m}
 }
 
 // RegisterRoutes attaches the check-in and health handlers to mux.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/checkin/{slug}", s.handleCheckin)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
+}
+
+func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	// Get performs a single cheap bbolt View without scanning monitor state.
+	if _, _, err := s.store.Get("__pulse_healthz_probe__"); err != nil {
+		slog.Error("healthz store probe failed", "err", err)
+		http.Error(w, "store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 type checkinRequest struct {
@@ -89,11 +148,13 @@ type checkinRequest struct {
 func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	if !store.ValidSlug(slug) {
+		s.metrics.checkins.WithLabelValues("invalid").Inc()
 		http.Error(w, "invalid slug", http.StatusBadRequest)
 		return
 	}
 	tokenProject, ok := s.authProject(r)
 	if !ok {
+		s.metrics.checkins.WithLabelValues("unauthorized").Inc()
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -103,16 +164,19 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 	var req checkinRequest
 	if err := dec.Decode(&req); err != nil {
+		s.metrics.checkins.WithLabelValues("invalid").Inc()
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	// Reject trailing data (e.g. `{...} garbage` or two concatenated objects) so a
 	// malformed body cannot smuggle a mutation past the field validation above.
 	if dec.Decode(&struct{}{}) != io.EOF {
+		s.metrics.checkins.WithLabelValues("invalid").Inc()
 		http.Error(w, "unexpected trailing data", http.StatusBadRequest)
 		return
 	}
 	if !store.ValidStatus(req.Status) {
+		s.metrics.checkins.WithLabelValues("invalid").Inc()
 		http.Error(w, "invalid status", http.StatusBadRequest)
 		return
 	}
@@ -134,13 +198,19 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	})
 	switch {
 	case err == nil:
+		s.metrics.checkins.WithLabelValues("ok").Inc()
 		w.WriteHeader(http.StatusNoContent)
 	case errors.Is(err, store.ErrNegativeValue):
+		s.metrics.checkins.WithLabelValues("invalid").Inc()
 		http.Error(w, "negative timing values not allowed", http.StatusBadRequest)
 	case errors.Is(err, store.ErrProjectMismatch):
+		s.metrics.checkins.WithLabelValues("forbidden").Inc()
 		// Slug is owned by another project — don't leak which; just forbid.
 		http.Error(w, "forbidden", http.StatusForbidden)
 	default:
+		s.metrics.checkins.WithLabelValues("store_error").Inc()
+		s.metrics.storeWriteErrs.Inc()
+		slog.Error("check-in store write failed", "slug", slug, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
 }

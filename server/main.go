@@ -55,9 +55,11 @@ func run() error {
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(metrics.NewCollector(st))
+	instrumentation := api.NewMetrics()
+	instrumentation.Register(reg)
 
 	mux := http.NewServeMux()
-	api.New(st, auth, allowUnauth).RegisterRoutes(mux)
+	api.NewWithMetrics(st, auth, allowUnauth, instrumentation).RegisterRoutes(mux)
 	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
 
 	srv := &http.Server{
@@ -72,12 +74,8 @@ func run() error {
 	// Initial sweep BEFORE serving: a restart must not expose monitors that are
 	// already past TTL (they would false-alert as late until the first periodic
 	// sweep an hour later).
-	if n, err := st.ExpireOlderThan(ttl); err != nil {
-		slog.Error("initial expiry sweep", "err", err)
-	} else if n > 0 {
-		slog.Info("expired stale monitors at startup", "count", n)
-	}
-	go expiryLoop(ctx, st, ttl)
+	expireStale(st, ttl, instrumentation)
+	go expiryLoop(ctx, st, ttl, instrumentation)
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -101,7 +99,7 @@ func run() error {
 	return srv.Shutdown(shutCtx)
 }
 
-func expiryLoop(ctx context.Context, st *store.Store, ttl time.Duration) {
+func expiryLoop(ctx context.Context, st *store.Store, ttl time.Duration, instrumentation *api.Metrics) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
 	for {
@@ -109,12 +107,45 @@ func expiryLoop(ctx context.Context, st *store.Store, ttl time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if n, err := st.ExpireOlderThan(ttl); err != nil {
-				slog.Error("expiry sweep", "err", err)
-			} else if n > 0 {
-				slog.Info("expired stale monitors", "count", n)
-			}
+			expireStale(st, ttl, instrumentation)
 		}
+	}
+}
+
+func expireStale(st *store.Store, ttl time.Duration, instrumentation *api.Metrics) {
+	before, err := st.List()
+	if err != nil {
+		slog.Error("expiry sweep snapshot", "err", err)
+		return
+	}
+	n, err := st.ExpireOlderThan(ttl)
+	if err != nil {
+		slog.Error("expiry sweep", "err", err)
+		return
+	}
+	instrumentation.RecordExpired(n)
+	if n == 0 {
+		return
+	}
+	after, err := st.List()
+	if err != nil {
+		slog.Error("expiry sweep victim snapshot", "count", n, "err", err)
+		return
+	}
+	alive := make(map[string]struct{}, len(after))
+	for _, monitor := range after {
+		alive[monitor.Slug] = struct{}{}
+	}
+	identified := 0
+	for _, monitor := range before {
+		if _, ok := alive[monitor.Slug]; ok {
+			continue
+		}
+		identified++
+		slog.Info("expired stale monitor", "slug", monitor.Slug, "project", monitor.Project)
+	}
+	if identified != n {
+		slog.Warn("expiry sweep victim snapshot mismatch", "count", n, "identified", identified)
 	}
 }
 
