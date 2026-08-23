@@ -16,6 +16,11 @@ async expireStaleBookings() {
 }
 ```
 
+`@Pulse` preserves the metadata installed by Nest's `@Cron`, so either decorator
+order is supported. The order shown above (`@Cron` above `@Pulse`) is recommended
+for readability. Check-ins fail open and are bounded by a 10-second request
+timeout by default; override it with `timeoutMs` in `configurePulse` when needed.
+
 Configure once at bootstrap (or rely on env `PULSE_URL`, `PULSE_TOKEN`, `PULSE_PROJECT`):
 
 ```ts
