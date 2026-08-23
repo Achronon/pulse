@@ -86,6 +86,7 @@ post my-cron '{"status":"ok","interval_seconds":3600}'   # or {"status":"fail"}
 | field | meaning |
 |---|---|
 | `status` | `register` \| `start` \| `ok` \| `fail` |
+| `severity` | optional `warning` (default) \| `critical`; emitted only on `pulse_monitor_info` |
 | `next_expected_at` | unix secs of the next due run (client-computed from cron — full precision) |
 | `interval_seconds` | alternative to `next_expected_at`; server uses `now + interval` |
 | `grace_seconds` | tolerance after `next_expected` before "late" |
@@ -95,6 +96,16 @@ post my-cron '{"status":"ok","interval_seconds":3600}'   # or {"status":"fail"}
 `register` is authoritative — send it at process start so a job that never fires is
 still detectable, and to clear stale schedule fields. `start` advances `next_expected`
 to the following run, so a long-but-punctual run isn't flagged late (that's `hung`).
+
+Severity is a server-first rollout contract. A registration may declare
+`"severity":"critical"`; registrations that omit it and all existing monitors
+default to `warning`. Check-ins without a severity preserve the registered value.
+The server validates the closed enum and exposes it only on
+`pulse_monitor_info{severity=...}` so the high-churn metrics do not gain another
+cardinality dimension. Do not update clients to send this field until the server
+change has been deployed and the deployed binary has been explicitly confirmed to
+accept it; the current clients intentionally continue sending the seven-field
+payload.
 
 ## 5. What alerts you get
 

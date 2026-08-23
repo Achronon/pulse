@@ -79,6 +79,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 type checkinRequest struct {
 	Status            string  `json:"status"`
 	Project           string  `json:"project"`
+	Severity          *string `json:"severity"`
 	NextExpectedAt    int64   `json:"next_expected_at"`
 	IntervalSeconds   int64   `json:"interval_seconds"`
 	GraceSeconds      int64   `json:"grace_seconds"`
@@ -126,6 +127,7 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	_, err := s.store.Apply(slug, store.CheckIn{
 		Status:            store.Status(req.Status),
 		Project:           project,
+		Severity:          req.Severity,
 		NextExpectedAt:    req.NextExpectedAt,
 		IntervalSeconds:   req.IntervalSeconds,
 		GraceSeconds:      req.GraceSeconds,
@@ -137,6 +139,8 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case errors.Is(err, store.ErrNegativeValue):
 		http.Error(w, "negative timing values not allowed", http.StatusBadRequest)
+	case errors.Is(err, store.ErrInvalidSeverity):
+		http.Error(w, "invalid severity", http.StatusBadRequest)
 	case errors.Is(err, store.ErrProjectMismatch):
 		// Slug is owned by another project — don't leak which; just forbid.
 		http.Error(w, "forbidden", http.StatusForbidden)

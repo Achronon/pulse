@@ -1,10 +1,16 @@
 package store
 
 import (
+	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
+
+func stringPtr(s string) *string { return &s }
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
@@ -89,6 +95,40 @@ func TestInvalidStatus(t *testing.T) {
 	}
 }
 
+func TestSeverityDefaultsAndBarePingsPreserveIt(t *testing.T) {
+	s := newTestStore(t)
+	m, err := s.Apply("job", CheckIn{Status: StatusRegister, Project: "p", Severity: stringPtr(SeverityCritical)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Severity != SeverityCritical {
+		t.Fatalf("severity = %q, want %q", m.Severity, SeverityCritical)
+	}
+
+	m, err = s.Apply("job", CheckIn{Status: StatusOK})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Severity != SeverityCritical {
+		t.Errorf("bare ping changed severity to %q", m.Severity)
+	}
+
+	m, err = s.Apply("defaulted", CheckIn{Status: StatusRegister})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Severity != SeverityWarning {
+		t.Errorf("missing registration severity = %q, want %q", m.Severity, SeverityWarning)
+	}
+}
+
+func TestInvalidSeverity(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.Apply("job", CheckIn{Status: StatusRegister, Severity: stringPtr("urgent")}); !errors.Is(err, ErrInvalidSeverity) {
+		t.Fatalf("error = %v, want ErrInvalidSeverity", err)
+	}
+}
+
 func TestPersistenceAcrossReopen(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pulse.db")
@@ -96,7 +136,10 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Apply("job", CheckIn{Status: StatusOK, Project: "p", IntervalSeconds: 60}); err != nil {
+	if _, err := s.Apply("job", CheckIn{Status: StatusRegister, Project: "p", Severity: stringPtr(SeverityCritical), IntervalSeconds: 60}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Apply("job", CheckIn{Status: StatusOK}); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.Close()
@@ -110,8 +153,51 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("get after reopen: found=%v err=%v", found, err)
 	}
-	if m.Project != "p" || m.RunsOK != 1 {
+	if m.Project != "p" || m.RunsOK != 1 || m.Severity != SeverityCritical {
 		t.Errorf("state not persisted: %+v", m)
+	}
+}
+
+func TestLegacySchemaFixtureCompatibility(t *testing.T) {
+	s := newTestStore(t)
+	legacy := map[string]any{
+		"slug": "legacy", "project": "p", "last_success": int64(1_700_000_000),
+		"runs_ok": uint64(4), "last_seen": int64(1_700_000_100),
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucket).Put([]byte("legacy"), raw)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	m, found, err := s.Get("legacy")
+	if err != nil || !found {
+		t.Fatalf("legacy get: found=%v err=%v", found, err)
+	}
+	if m.Project != "p" || m.RunsOK != 4 || m.Severity != SeverityWarning {
+		t.Errorf("legacy row was not read with compatibility default: %+v", m)
+	}
+
+	// A pre-severity reader ignores the additive JSON field and can still read
+	// the fields it owns. This is the rollback-direction schema check.
+	newRaw, err := json.Marshal(Monitor{Slug: "new", Project: "p", Severity: SeverityCritical, RunsOK: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var old struct {
+		Slug    string `json:"slug"`
+		Project string `json:"project"`
+		RunsOK  uint64 `json:"runs_ok"`
+	}
+	if err := json.Unmarshal(newRaw, &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.Slug != "new" || old.Project != "p" || old.RunsOK != 2 {
+		t.Errorf("legacy reader could not read new row: %+v", old)
 	}
 }
 

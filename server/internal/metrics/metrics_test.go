@@ -54,3 +54,41 @@ func TestCollectorAlwaysEmitsGraceAndLastSuccess(t *testing.T) {
 		t.Error("pulse_last_failure_timestamp_seconds should be absent (never failed)")
 	}
 }
+
+func TestCollectorEmitsSeverityOnlyOnInfo(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "pulse.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	severity := store.SeverityCritical
+	if _, err := st.Apply("job", store.CheckIn{Status: store.StatusRegister, Project: "p", Severity: &severity}); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(NewCollector(st))
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundCritical := false
+	for _, mf := range mfs {
+		for _, metric := range mf.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "severity" {
+					if mf.GetName() != "pulse_monitor_info" {
+						t.Errorf("severity label leaked onto %s", mf.GetName())
+					}
+					if label.GetValue() == store.SeverityCritical {
+						foundCritical = true
+					}
+				}
+			}
+		}
+	}
+	if !foundCritical {
+		t.Fatal("pulse_monitor_info did not expose critical severity")
+	}
+}

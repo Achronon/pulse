@@ -74,6 +74,49 @@ func TestCheckinOK(t *testing.T) {
 	}
 }
 
+func TestCheckinSeverityAndCompatibilityDefault(t *testing.T) {
+	ts, st := newTestServer(t, NewAuthenticator("secret", nil), false)
+	resp := post(t, ts, "critical-job", "secret", `{"status":"register","project":"p","severity":"critical"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("critical registration status = %d, want 204", resp.StatusCode)
+	}
+	m, found, err := st.Get("critical-job")
+	if err != nil || !found || m.Severity != store.SeverityCritical {
+		t.Fatalf("critical registration state: found=%v err=%v monitor=%+v", found, err, m)
+	}
+
+	resp = post(t, ts, "critical-job", "secret", `{"status":"ok"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("bare ping status = %d, want 204", resp.StatusCode)
+	}
+	if m, _, _ = st.Get("critical-job"); m.Severity != store.SeverityCritical {
+		t.Errorf("bare ping changed severity to %q", m.Severity)
+	}
+
+	resp = post(t, ts, "default-job", "secret", `{"status":"register"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("default registration status = %d, want 204", resp.StatusCode)
+	}
+	if m, _, _ = st.Get("default-job"); m.Severity != store.SeverityWarning {
+		t.Errorf("default severity = %q, want %q", m.Severity, store.SeverityWarning)
+	}
+}
+
+func TestCheckinRejectsInvalidSeverityWithoutMutation(t *testing.T) {
+	ts, st := newTestServer(t, NewAuthenticator("secret", nil), false)
+	resp := post(t, ts, "job", "secret", `{"status":"register","project":"p","severity":"URGENT!!"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if _, found, _ := st.Get("job"); found {
+		t.Fatal("invalid severity mutated the monitor")
+	}
+}
+
 func TestScopedTokenForcesProject(t *testing.T) {
 	// token scoped to project "empera"; request claims "evil" — must be overridden.
 	ts, st := newTestServer(t, NewAuthenticator("", map[string]string{"tok-emp": "empera"}), false)
