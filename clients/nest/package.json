@@ -5,17 +5,40 @@
   "license": "MIT",
   "author": "Achronon",
   "homepage": "https://github.com/Achronon/pulse/tree/main/clients/nest#readme",
-  "repository": { "type": "git", "url": "https://github.com/Achronon/pulse.git", "directory": "clients/nest" },
-  "bugs": { "url": "https://github.com/Achronon/pulse/issues" },
-  "keywords": ["pulse", "heartbeat", "cron", "liveness", "monitoring", "healthcheck", "nestjs", "decorator", "prometheus"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Achronon/pulse.git",
+    "directory": "clients/nest"
+  },
+  "bugs": {
+    "url": "https://github.com/Achronon/pulse/issues"
+  },
+  "keywords": [
+    "pulse",
+    "heartbeat",
+    "cron",
+    "liveness",
+    "monitoring",
+    "healthcheck",
+    "nestjs",
+    "decorator",
+    "prometheus"
+  ],
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
-  "publishConfig": { "access": "public", "provenance": true },
-  "engines": { "node": ">=18" },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "prepublishOnly": "npm run build"
   },
@@ -23,10 +46,10 @@
     "cron-parser": "^4.9.0"
   },
   "devDependencies": {
-    "@nestjs/schedule": "^4.1.2",
+    "@nestjs/schedule": "^6.1.3",
     "@types/node": "^20.11.0",
     "reflect-metadata": "^0.2.2",
     "typescript": "^5.4.0",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.12"
   }
 }
