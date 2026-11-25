@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  server:
+    name: Go server
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache-dependency-path: server/go.sum
+
+      - name: Vet and test
+        run: go vet ./... && go test -race ./...
+
+  client-go:
+    name: Go client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/go
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache-dependency-path: clients/go/go.sum
+
+      - name: Vet and test
+        run: go vet ./... && go test -race ./...
+
+  client-python:
+    name: Python client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install and test
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+          pytest
+
+  client-nest:
+    name: Nest client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/nest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.3'
+          cache: 'npm'
+          cache-dependency-path: clients/nest/package-lock.json
+
+      - name: Install, build, and test
+        run: |
+          npm ci
+          npm run build
+          npm test
