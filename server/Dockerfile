@@ -12,5 +12,5 @@ COPY --from=build /pulse /pulse
 EXPOSE 8080
 # bbolt state; mount a writable volume here (k8s: fsGroup 65532 for nonroot).
 VOLUME ["/data"]
-USER nonroot:nonroot
+USER 65532:65532
 ENTRYPOINT ["/pulse"]
